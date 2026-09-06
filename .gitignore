@@ -1,0 +1,19 @@
+# Binaries
+/safenat
+/dist/
+
+# Local runtime configs & data
+config_server.yaml
+config_client.yaml
+*.local.yaml
+*.db
+/data/
+
+# Web frontend (M4)
+web/node_modules/
+web/dist/
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
