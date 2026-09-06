@@ -26,7 +26,7 @@ safenat client -c config_client.yaml   # 内网
 | 里程碑 | 内容 | 状态 |
 |---|---|---|
 | M0 | 仓库骨架 / CLI / 设计文档 | ✅ |
-| M1 | 控制连接 + 心跳 + token + TCP 映射闭环 | 进行中 |
+| M1 | 控制连接 + 心跳 + token + TCP 映射闭环 | ✅ |
 | M2 | Web 管理：登录 + 白名单 + 隧道状态 | ⬜ |
 | M3 | SOCKS5 + 重连加固 | ⬜ |
 | M4 | Web UI 完善美化（Vue3 面板 + 实时） | ⬜ |

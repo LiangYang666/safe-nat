@@ -1,0 +1,18 @@
+# safe-nat client config (LAN side).
+# Copy to config_client.yaml and adjust.
+
+server_addr: 127.0.0.1   # public server
+server_port: 10101
+token: "change-me"       # must match the server
+
+tunnels:
+  ssh:
+    local_ip: 127.0.0.1   # the LAN machine/port to expose
+    local_port: 22
+    remote_port: 40022    # public port on the server
+    # firewall: true      # (default) whitelist-gate this port once web is on
+  # api:
+  #   local_ip: 192.168.1.202
+  #   local_port: 8011
+  #   remote_port: 8011
+  #   firewall: false     # open to anyone; rely on the app's own auth

@@ -1,0 +1,11 @@
+# safe-nat server config (cloud side).
+# Copy to config_server.yaml and adjust.
+
+bind_port: 10101   # control port; the client connects here
+token: "change-me"
+
+# Uncomment to enable the web management UI + IP-whitelist firewall (M2+):
+# web:
+#   bind_port: 10102
+#   username: admin
+#   password: "change-me"
