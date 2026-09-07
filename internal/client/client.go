@@ -7,6 +7,7 @@ package client
 import (
 	"bufio"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/LiangYang666/safe-nat/internal/config"
 	"github.com/LiangYang666/safe-nat/internal/protocol"
+	"github.com/LiangYang666/safe-nat/internal/tlsx"
 )
 
 const (
@@ -46,9 +48,66 @@ type Client struct {
 	log     *slog.Logger
 	entries []entry
 	byPort  map[uint16]entry
+	tlsCfg  *tls.Config // non-nil: wrap the control connection in TLS (v0.7)
+	tlsErr  error       // tls.Config construction failure (fail fast in Run)
+
+	stateMu  sync.Mutex
+	up       bool
+	since    time.Time
+	lastErr  string
+	attempts int64
 }
 
-// New validates nothing (config.LoadClient did); it only builds lookups.
+func (c *Client) markUp() {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	c.up = true
+	c.since = time.Now()
+	c.lastErr = ""
+}
+
+func (c *Client) markDown(err error) {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	c.up = false
+	if err != nil {
+		c.lastErr = err.Error()
+	}
+	c.attempts++
+}
+
+// State returns a snapshot for the local admin endpoint (`safenat status`).
+func (c *Client) State() map[string]any {
+	c.stateMu.Lock()
+	defer c.stateMu.Unlock()
+	st := map[string]any{
+		"connected": c.up,
+		"server":    net.JoinHostPort(c.cfg.ServerAddr, fmt.Sprintf("%d", c.cfg.ServerPort)),
+		"name":      c.cfg.Name,
+		"tls":       c.tlsCfg != nil,
+		"tunnels":   len(c.entries) + boolInt(c.cfg.Socks5 != nil),
+	}
+	if c.since.IsZero() {
+		st["connected_since"] = nil
+	} else {
+		st["connected_since"] = c.since.UTC().Format(time.RFC3339)
+	}
+	if c.lastErr != "" {
+		st["last_error"] = c.lastErr
+	}
+	st["reconnect_attempts"] = c.attempts
+	return st
+}
+
+func boolInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// New validates nothing (config.LoadClient did); it only builds lookups and,
+// when TLS is enabled, the fingerprint-verifying client tls.Config.
 func New(cfg *config.ClientConfig, log *slog.Logger) *Client {
 	entries := make([]entry, 0, len(cfg.Tunnels))
 	for name, t := range cfg.Tunnels {
@@ -59,7 +118,19 @@ func New(cfg *config.ClientConfig, log *slog.Logger) *Client {
 	for _, e := range entries {
 		byPort[uint16(e.cfg.RemotePort)] = e
 	}
-	return &Client{cfg: cfg, log: log, entries: entries, byPort: byPort}
+	c := &Client{cfg: cfg, log: log, entries: entries, byPort: byPort}
+	if tlsx.Enabled(cfg.TLS) {
+		tc, err := tlsx.ClientConfig(cfg.TLSFingerprints)
+		if err != nil {
+			// Failing open here would silently run without transport
+			// security; fail fast instead so the operator sees it.
+			log.Error("tls client config failed", "err", err)
+			c.tlsErr = err
+		} else {
+			c.tlsCfg = tc
+		}
+	}
+	return c
 }
 
 // Run connects, and on any failure reconnects with exponential backoff
@@ -67,6 +138,9 @@ func New(cfg *config.ClientConfig, log *slog.Logger) *Client {
 // is treated as a healthy baseline, so the next failure restarts from the
 // base delay instead of compounding a stale backoff.
 func (c *Client) Run(ctx context.Context) error {
+	if c.tlsErr != nil {
+		return fmt.Errorf("client: %w", c.tlsErr)
+	}
 	delay := backoffBase
 	for {
 		if ctx.Err() != nil {
@@ -74,6 +148,9 @@ func (c *Client) Run(ctx context.Context) error {
 		}
 		start := time.Now()
 		err := c.runOnce(ctx)
+		if err != nil {
+			c.markDown(err)
+		}
 		if ctx.Err() != nil {
 			return nil
 		}
@@ -111,8 +188,18 @@ func (c *Client) runOnce(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("dial server %s: %w", addr, err)
 	}
+	if c.tlsCfg != nil {
+		tc := tls.Client(conn, c.tlsCfg)
+		_ = conn.SetDeadline(time.Now().Add(serverDialTimeout)) // bound the handshake
+		if err := tc.Handshake(); err != nil {
+			_ = conn.Close()
+			return fmt.Errorf("tls handshake with %s: %w", addr, err)
+		}
+		_ = conn.SetDeadline(time.Time{})
+		conn = tc // from here on everything speaks over TLS
+	}
 	defer conn.Close()
-	c.log.Info("connected to server", "server", addr)
+	c.log.Info("connected to server", "server", addr, "tls", c.tlsCfg != nil)
 
 	sw := protocol.NewConnWriter(conn)
 	br := bufio.NewReaderSize(conn, dataBufSize)
@@ -153,6 +240,7 @@ func (c *Client) runOnce(ctx context.Context) error {
 	if !resp.OK {
 		return fmt.Errorf("server rejected login: %s", resp.Message)
 	}
+	c.markUp() // authenticated: the session is up from the operator's view
 	for _, r := range resp.Results {
 		if r.OK {
 			c.log.Info("tunnel ready", "name", r.Name, "remote_port", r.RemotePort)

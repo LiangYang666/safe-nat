@@ -10,6 +10,8 @@ package server
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"log/slog"
 	"net"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/LiangYang666/safe-nat/internal/config"
 	"github.com/LiangYang666/safe-nat/internal/throttle"
+	"github.com/LiangYang666/safe-nat/internal/tlsx"
 	"github.com/LiangYang666/safe-nat/internal/whitelist"
 )
 
@@ -38,11 +41,29 @@ type Server struct {
 	// public control port survives token brute force.
 	ctlLimiter *throttle.Limiter
 
+	// tlsCfg non-nil means the control listener speaks TLS (v0.7 default).
+	tlsCfg *tls.Config
+
 	mu       sync.Mutex
 	sessions map[*session]struct{}
 
+	// pendingLogin caps how many not-yet-authenticated connections a single
+	// IP may hold open at once (each would otherwise sit in the 15s login
+	// read window, letting scanners pile up goroutines). Successful logins
+	// leave this set; the count is per source IP.
+	pendingLogin struct {
+		mu sync.Mutex
+		n  map[string]int
+	}
+
 	blockedTotal atomic.Uint64 // firewall denials across all tunnels, lifetime
 }
+
+// maxPendingLogins is the per-IP cap on connections still inside the login
+// handshake. Real clients hold exactly one control connection and finish the
+// handshake in milliseconds, so NAT users sharing an egress IP are never
+// affected.
+const maxPendingLogins = 5
 
 // New builds the manager; when web management is configured it opens (or
 // creates) the whitelist database.
@@ -54,6 +75,18 @@ func New(cfg *config.ServerConfig, log *slog.Logger) (*Server, error) {
 		start:      time.Now(),
 		ctlLimiter: throttle.New(),
 		sessions:   make(map[*session]struct{}),
+	}
+	s.pendingLogin.n = make(map[string]int)
+	if tlsx.Enabled(cfg.TLS) {
+		cert, err := tlsx.EnsureServerCert(cfg.TLSCert, cfg.TLSKey)
+		if err != nil {
+			return nil, err
+		}
+		s.tlsCfg = tlsx.ServerConfig(cert)
+		leaf, perr := x509.ParseCertificate(cert.Certificate[0])
+		if perr == nil {
+			log.Info("tls enabled", "fingerprint", tlsx.Fingerprint(leaf))
+		}
 	}
 	if cfg.Web != nil {
 		store, err := whitelist.Open(cfg.Web.DBPath)
@@ -100,6 +133,30 @@ func (s *Server) Publish(ev Event) {
 	s.hub.Publish(ev)
 }
 
+// pendingEnter reserves one login slot for ip; false means the cap is
+// reached and the connection should be dropped without reading anything.
+func (s *Server) pendingEnter(ip string) bool {
+	s.pendingLogin.mu.Lock()
+	defer s.pendingLogin.mu.Unlock()
+	if s.pendingLogin.n[ip] >= maxPendingLogins {
+		return false
+	}
+	s.pendingLogin.n[ip]++
+	return true
+}
+
+// pendingLeave releases one login slot for ip (called when the connection
+// ends, whether or not it authenticated).
+func (s *Server) pendingLeave(ip string) {
+	s.pendingLogin.mu.Lock()
+	defer s.pendingLogin.mu.Unlock()
+	if s.pendingLogin.n[ip] <= 1 {
+		delete(s.pendingLogin.n, ip)
+		return
+	}
+	s.pendingLogin.n[ip]--
+}
+
 // Run listens on cfg.BindPort and serves client sessions until ctx is
 // cancelled or the listener fails.
 func (s *Server) Run(ctx context.Context) error {
@@ -108,7 +165,10 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("server: listen %s: %w", addr, err)
 	}
-	s.log.Info("server listening", "addr", ln.Addr().String(), "web", s.cfg.Web != nil)
+	if s.tlsCfg != nil {
+		ln = tls.NewListener(ln, s.tlsCfg)
+	}
+	s.log.Info("server listening", "addr", ln.Addr().String(), "web", s.cfg.Web != nil, "tls", s.tlsCfg != nil)
 
 	var sessions sync.WaitGroup
 	go func() {
@@ -123,9 +183,19 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 			return fmt.Errorf("server: accept: %w", err)
 		}
+		host, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
+		if !s.pendingEnter(host) {
+			// Per-IP login-concurrency cap: a flood of not-yet-logged-in
+			// connections from one source gets dropped before it can
+			// occupy the 15s login read window.
+			s.log.Debug("too many pending logins from one IP, dropping", "ip", host)
+			_ = conn.Close()
+			continue
+		}
 		sessions.Add(1)
 		go func() {
 			defer sessions.Done()
+			defer s.pendingLeave(host)
 			newSession(s, conn).run()
 		}()
 	}

@@ -13,8 +13,10 @@
 - ✅ **Web 管理面板**（Vue3 暗色运维风，登录 / 总览 / 隧道 / 白名单 / 安全日志 + SSE 实时事件）
 - ✅ **SOCKS5 代理**：把客户端所在的局域网变成可浏览的网络（出网代理场景）
 - ✅ 心跳保活 + 断线指数退避重连（±20% 抖动防重连风暴）
+- ✅ **自动传输加密（v0.7）**：server↔client 默认 TLS（自签 + 指纹校验，SSH known_hosts 式），零配置
 - ✅ 单二进制部署（前端 embed + 纯 Go sqlite，免 cgo，可交叉编译上路由器 / NAS）
-- ✅ **防爆破**：Web 登录与控制口接入按 IP 递增锁定（5 错 → 1m/5m/15m/1h/6h/24h），失败尝试实时上安全日志
+- ✅ **防爆破**：Web 登录与控制口接入按 IP 递增锁定（5 错 → 1m/5m/15m），失败尝试实时上安全日志
+- ✅ 本地运维：`safenat init`（配置生成到用户目录）· `safenat status`（已监听端口/会话/统计）· `safenat logs`
 
 ## 架构
 
@@ -37,6 +39,20 @@
 
 ## 快速开始
 
+两种方式二选一：
+
+```bash
+# A. 本地/个人使用：配置写到用户目录（Linux ~/.config/safenat/，
+#    macOS ~/Library/Application Support/safenat/），不用 -c
+safenat init server    # 生成并告诉你路径，改好再跑
+safenat init client
+safenat server         # 自动找到用户目录配置；没有则提示 init
+safenat client
+
+# B. 云服务器部署（systemd）：-c 显式指定，见 docs/deploy.md
+safenat server -c config_server.yaml
+```
+
 ### 1. 服务端（云服务器）
 
 ```bash
@@ -49,6 +65,9 @@ safenat server -c config_server.yaml
 bind_port: 10010   # 控制端口：客户端连这里
 token: "change-me"          # 客户端接入凭证，务必修改
 
+# tls: true                # 默认开：首次启动自动生成自签证书
+#                          # safenat-server.crt/.key（配置同目录）。别删，
+#                          # 删了客户端指纹校验会全部拒连（见「安全模型」）
 web:                       # 存在即启用管理面板 + 白名单防火墙
   bind_port: 10086
   username: admin
@@ -71,6 +90,11 @@ name: "home-server"        # 可选：Web 面板里显示的标签
 server_addr: 1.2.3.4       # 云服务器
 server_port: 10010
 token: "change-me"         # 与服务端一致
+
+# tls: true                # 默认开：首次连接自动信任服务器指纹并写入
+#                          # known_servers.txt（配置同目录）；之后服务器
+#                          # 换了证书会被拒连（防冒充），确认真服务器后
+#                          # 删除该文件重连即可
 
 tunnels:
   ssh:
@@ -105,14 +129,29 @@ curl --socks5-hostname <server>:7999 http://intranet.example/   # SOCKS5 代理
 |---|---|---|---|
 | server | `bind_port` | 控制端口 | 10010 |
 | server | `token` | 客户端接入凭证 | `123456`（有警告） |
+| server | `tls` / `tls_cert` / `tls_key` | 自动加密开关；证书路径（自动生成） | true / <配置目录>/safenat-server.crt·key |
 | server.web | `bind_port` / `username` / `password` / `db_path` | 管理面板；**配置了 web 段才启用防火墙** | 10086 / admin / 123456 / data/safenat.db |
 | client | `name` | Web 面板显示名 | 来源 IP |
 | client | `server_addr` / `server_port` / `token` | 服务端地址与凭证 | - |
+| client | `tls` / `tls_fingerprints` | 加密开关；服务器指纹存储 | true / <配置目录>/known_servers.txt |
 | client.tunnels.\<name> | `type` | `tcp` | tcp |
 | | `local_ip` / `local_port` | 内网服务 | 127.0.0.1 / - |
 | | `remote_port` | 服务器公网端口（须未被占用） | - |
 | | `firewall` | 是否受白名单防火墙保护 | true |
 | client.socks5 | `remote_port` / `firewall` | 服务器上的 SOCKS5 代理端口 | - / true |
+
+## 本地运维（v0.7）
+
+每个运行中的 server/client 都会在本机开一个 **unix socket 管理端点**（`<TMPDIR>/safenat-<server|client>-<uid>.sock`，权限 0600，仅本进程所属用户可读——本地文件权限即鉴权，不需要密码）：
+
+```bash
+safenat status           # 默认查 server：uptime / 已监听端口 / 客户端会话 / 隧道 / 统计 / TLS
+safenat status client    # 查 client：连接状态 / 重连次数 / 最近错误
+safenat logs             # server 最近日志（内存环形 2000 行）
+safenat logs client 50   # client 最近 50 行
+```
+
+进程退出自动清理 socket；残留的陈旧 socket 下次启动会覆盖。日志同时照常写 stderr（systemd/journald 不受影响）。
 
 ## Web 管理 API
 
@@ -120,7 +159,7 @@ curl --socks5-hostname <server>:7999 http://intranet.example/   # SOCKS5 代理
 
 | Method | Path | 说明 |
 |---|---|---|
-| POST | `/api/login` | 登录（失败 5 次 → 按 IP 递增锁定：1m → 5m → 15m → 1h → 6h → 24h，成功即清零） |
+| POST | `/api/login` | 登录（失败 5 次 → 按 IP 递增锁定：1m → 5m → 15m，成功即清零） |
 | POST | `/api/logout` · GET `/api/session` | 登出 / 会话探测 |
 | GET | `/api/tunnels` · `/api/sessions` | 隧道 / 在线客户端状态 |
 | GET | `/api/stats` | 汇总：客户端、连接、累计拦截、运行时长 |
@@ -131,10 +170,9 @@ curl --socks5-hostname <server>:7999 http://intranet.example/   # SOCKS5 代理
 ## 安全模型（诚实版）
 
 - **凭证**：client 接入用 `token`（控制连接登录时校验，常量时间比较）；Web 用 `username/password`。
-- **防爆破（v0.6.0）**：Web 登录与控制口 client 接入都受**按来源 IP 的递增阶梯锁**保护——同一 IP 连续 5 次凭据错误 → 锁 1 分钟，逐轮升级至 **5m → 15m → 1h → 6h → 24h 封顶**，且锁过（stage>0）的 IP 不会被冷清理重置（等待锁到期不会换来新的 1 分钟起点），只有成功凭据清零；锁定期内 Web 返回 `429 + Retry-After`，控制口连接在读帧前即被断开（攻击者连试探成本都拿不到）。所有被拒尝试以 `auth_fail` / `login_fail` 事件实时流入安全日志页。锁是内存态：重启进程即清零（NAT 后多客户端共享出口 IP 时，正常登录不受影响——成功即清零）。
-- **访问控制**：白名单防火墙只决定「谁能连穿透端口」；判定发生在 accept 时，已建立的连接不受中途改名单影响（v1 语义，文档见 protocol.md）。
-- **不做传输加密（v1）**：token 防未授权客户端接入，数据面明文。公网使用建议外层套 **TLS / WireGuard**（与 frp 同款取舍）。v2 预留 `tls` 选项（Go 标准库自带，成本低）。
-- Web session 为内存态、无 CSRF token：面板默认随服务公网可达，口令强度 + 上面的阶梯锁是它的防线；更强的隔离（反代 + HTTPS、仅 VPN 可达）仍是推荐做法。
+- **防爆破**：Web 登录与控制口 client 接入都受**按来源 IP 的递增阶梯锁**保护——同一 IP 连续 5 次凭据错误 → 锁 1 分钟，再犯升级至 5m → 15m 封顶，且锁过（stage>0）的 IP 不会被冷清理重置（等待锁到期不会换来新的 1 分钟起点），只有成功凭据清零；锁定期内 Web 返回 `429 + Retry-After`，控制口连接在读帧前即被断开。所有被拒尝试以 `auth_fail` / `login_fail` 事件实时流入安全日志页。锁是内存态：重启进程即清零。
+- **传输加密（v0.7 默认开）**：server↔client 全链路 TLS——server 首次启动自动生成自签 ECDSA 证书（10 年）并持久化；client 首次连接自动信任其 SHA-256 指纹（写入 known_servers.txt），之后每次校验，**换证书即拒连**（防冒充/防重装误连）。诚实边界：无 CA、无域名，防的是被动嗅探（token 与数据不再明文过线）；**首次连接**的主动中间人无法完全排除（与 SSH 首次连接同理，可用 `safenat logs` 核对 server 启动时打印的 fingerprint）。面板（Web 管理）不在此 TLS 内——它是浏览器直连的 HTTP（v1 取舍，见下条）。
+- **Web 面板为 HTTP（v1 取舍）**：无 HTTPS（需要域名/证书，用户环境无备案）；无 CSRF token（SameSite=Lax 缓解）。面板默认随服务公网可达，防线 = 强口令 + 阶梯锁 + 失败审计；更强的隔离（反代 HTTPS、仅 VPN 可达）仍是推荐做法。
 
 ## 部署
 

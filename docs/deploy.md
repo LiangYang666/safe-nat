@@ -32,11 +32,18 @@ WantedBy=multi-user.target
 ```bash
 sudo mkdir -p /opt/safenat /etc/safenat /var/lib/safenat
 sudo cp safenat /opt/safenat/
-# config_server.yaml: web.db_path: /var/lib/safenat/safenat.db
+# config_server.yaml（v0.7 TLS 默认开，证书自动生成于 tls_cert/tls_key，
+#  必须放在 unit 可写目录——本模板已给 /var/lib/safenat 写入权）：
+#   web.db_path: /var/lib/safenat/safenat.db
+#   tls_cert: /var/lib/safenat/safenat-server.crt
+#   tls_key:  /var/lib/safenat/safenat-server.key
+#   ⚠️ 证书生成一次后别删：删了 = 换锁，所有客户端拒连，
+#      需逐个删除其 known_servers.txt 重新信任。
 sudo cp config_server.yaml /etc/safenat/
 sudo systemctl daemon-reload
 sudo systemctl enable --now safenat-server
 journalctl -u safenat-server -f          # 看日志
+safenat status                            # 本地运维：监听端口/会话/统计
 ```
 
 ## 客户端
@@ -56,14 +63,23 @@ Restart=always
 RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
+# 客户端首次连接要写服务器指纹文件（known_servers.txt）：
+ReadWritePaths=/var/lib/safenat
 
 [Install]
 WantedBy=multi-user.target
 ```
 
 ```bash
+# config_client.yaml（v0.7 TLS 默认开，客户端首次连接需写指纹文件，
+#  本模板给 client 也开 /var/lib/safenat 写入权）：
+#   tls_fingerprints: /var/lib/safenat/known_servers.txt
+sudo mkdir -p /opt/safenat /etc/safenat /var/lib/safenat
+sudo cp safenat /opt/safenat/
+sudo cp config_client.yaml /etc/safenat/
 sudo systemctl daemon-reload
 sudo systemctl enable --now safenat-client
+safenat status client                     # 本地运维：连接状态/最近错误
 ```
 
 ## 公网暴露面建议

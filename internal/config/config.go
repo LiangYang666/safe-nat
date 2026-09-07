@@ -5,9 +5,12 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/LiangYang666/safe-nat/internal/tlsx"
 )
 
 // ---------- server ----------
@@ -17,6 +20,14 @@ type ServerConfig struct {
 	BindPort int        `yaml:"bind_port"`
 	Token    string     `yaml:"token"`
 	Web      *WebConfig `yaml:"web"` // nil => web management + whitelist disabled
+
+	// TLS (auto transport encryption, v0.7). Enabled by default: the server
+	// generates a self-signed keypair on first start (tls_cert/tls_key,
+	// default <config dir>/safenat-server.crt|.key) and the client pins its
+	// fingerprint (SSH known_hosts style). Set tls: false to disable.
+	TLS     *bool  `yaml:"tls"`
+	TLSCert string `yaml:"tls_cert"`
+	TLSKey  string `yaml:"tls_key"`
 }
 
 // WebConfig enables the built-in management UI / whitelist firewall.
@@ -37,6 +48,13 @@ type ClientConfig struct {
 	Token      string                  `yaml:"token"`
 	Tunnels    map[string]TunnelConfig `yaml:"tunnels"`
 	Socks5     *Socks5Config           `yaml:"socks5"` // optional built-in SOCKS5 proxy (M3)
+
+	// TLS (auto transport encryption, v0.7). Enabled by default; the server's
+	// certificate fingerprint is trusted on first contact and stored in
+	// tls_fingerprints (default <config dir>/known_servers.txt). Set tls:
+	// false to disable.
+	TLS             *bool  `yaml:"tls"`
+	TLSFingerprints string `yaml:"tls_fingerprints"`
 }
 
 // Socks5Config enables a SOCKS5 proxy service: the server binds
@@ -124,6 +142,16 @@ func LoadServer(path string) (*ServerConfig, []string, error) {
 			warns = append(warns, "web.db_path unset, using \"data/safenat.db\"")
 		}
 	}
+	if tlsx.Enabled(cfg.TLS) {
+		dir := filepath.Dir(path)
+		if cfg.TLSCert == "" {
+			cfg.TLSCert = filepath.Join(dir, "safenat-server.crt")
+			warns = append(warns, "tls on: cert auto-generated at "+cfg.TLSCert)
+		}
+		if cfg.TLSKey == "" {
+			cfg.TLSKey = filepath.Join(dir, "safenat-server.key")
+		}
+	}
 	return &cfg, warns, nil
 }
 
@@ -147,6 +175,10 @@ func LoadClient(path string) (*ClientConfig, []string, error) {
 	}
 	if err := checkPort("server_port", cfg.ServerPort); err != nil {
 		return nil, warns, err
+	}
+	if tlsx.Enabled(cfg.TLS) && cfg.TLSFingerprints == "" {
+		cfg.TLSFingerprints = filepath.Join(filepath.Dir(path), "known_servers.txt")
+		warns = append(warns, "tls on: client pins server fingerprint at "+cfg.TLSFingerprints)
 	}
 	if len(cfg.Tunnels) == 0 {
 		return nil, warns, fmt.Errorf("config: at least one tunnel required")

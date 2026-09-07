@@ -4,10 +4,17 @@
 bind_port: 10010   # control port; the client connects here
 token: "change-me"
 
+# TLS is ON by default (v0.7): the first start auto-generates a self-signed
+# keypair. Point the files at a writable dir when running under systemd
+# hardening (ProtectSystem), e.g. /var/lib/safenat — see docs/deploy.md.
+# tls: true
+# tls_cert: /var/lib/safenat/safenat-server.crt
+# tls_key: /var/lib/safenat/safenat-server.key
+
 # Enables the web management UI (login, whitelist CRUD, live tunnel state)
 # and the IP-whitelist firewall. Remove the block to disable both.
 web:
   bind_port: 10086
   username: admin
   password: "change-me"
-  db_path: data/safenat.db   # sqlite whitelist store (created automatically)
+  db_path: /var/lib/safenat/safenat.db   # sqlite whitelist store (auto-created)

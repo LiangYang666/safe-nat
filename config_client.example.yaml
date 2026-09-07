@@ -6,6 +6,13 @@ server_addr: 127.0.0.1  # public server
 server_port: 10010
 token: "change-me"      # must match the server
 
+# TLS is ON by default (v0.7): on first connect the client pins the server's
+# certificate fingerprint into tls_fingerprints and rejects the connection
+# if the server ever presents a different certificate. If the server was
+# legitimately reinstalled, delete that file and reconnect.
+# tls: true
+# tls_fingerprints: /var/lib/safenat/known_servers.txt   # writable dir when under systemd hardening
+
 tunnels:
   ssh:
     local_ip: 127.0.0.1   # the LAN machine/port to expose

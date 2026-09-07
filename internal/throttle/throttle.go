@@ -20,18 +20,15 @@ import (
 const MaxFails = 5
 
 // lockSteps are the escalating lock durations; the last entry caps the
-// penalty for repeat offenders. Escalation is deliberately steep: a bot
-// that keeps guessing after each unlock earns exponentially longer locks,
-// topping out at a full day. Real clients are never harmed (a valid
-// credential resets the counter), and an operator who locks their own NAT
-// IP out can recover instantly by restarting the process (in-memory state).
+// penalty for repeat offenders (deliberately short enough that an operator
+// who locks out their own NAT IP recovers quickly — waiting out the lock is
+// the intended recovery path). Locked entries (stage > 0) keep their stage
+// until a successful auth, so waiting out a lock does not buy a fresh
+// 1-minute start.
 var lockSteps = []time.Duration{
 	1 * time.Minute,
 	5 * time.Minute,
 	15 * time.Minute,
-	1 * time.Hour,
-	6 * time.Hour,
-	24 * time.Hour,
 }
 
 // IdleReset: an entry that never reached a lockout (an occasional
