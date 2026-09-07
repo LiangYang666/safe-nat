@@ -12,6 +12,8 @@ const (
 	EvConnOpen   = "conn_open"   // a public connection passed the firewall and was opened
 	EvConnClose  = "conn_close"  // a public connection ended
 	EvBlocked    = "blocked"     // a connection was denied by the whitelist firewall
+	EvAuthFail   = "auth_fail"   // control-port login rejected (bad token / rate-limited)
+	EvLoginFail  = "login_fail"  // web login rejected or rate-limited
 )
 
 // Event is one real-time notification. The Time field is RFC3339 UTC.

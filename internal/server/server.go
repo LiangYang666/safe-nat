@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/LiangYang666/safe-nat/internal/config"
+	"github.com/LiangYang666/safe-nat/internal/throttle"
 	"github.com/LiangYang666/safe-nat/internal/whitelist"
 )
 
@@ -33,6 +34,10 @@ type Server struct {
 	hub   *Hub
 	start time.Time
 
+	// ctlLimiter rate-limits client login attempts per source IP, so the
+	// public control port survives token brute force.
+	ctlLimiter *throttle.Limiter
+
 	mu       sync.Mutex
 	sessions map[*session]struct{}
 
@@ -43,11 +48,12 @@ type Server struct {
 // creates) the whitelist database.
 func New(cfg *config.ServerConfig, log *slog.Logger) (*Server, error) {
 	s := &Server{
-		cfg:      cfg,
-		log:      log,
-		hub:      NewHub(),
-		start:    time.Now(),
-		sessions: make(map[*session]struct{}),
+		cfg:        cfg,
+		log:        log,
+		hub:        NewHub(),
+		start:      time.Now(),
+		ctlLimiter: throttle.New(),
+		sessions:   make(map[*session]struct{}),
 	}
 	if cfg.Web != nil {
 		store, err := whitelist.Open(cfg.Web.DBPath)
@@ -85,6 +91,13 @@ func (s *Server) AllowIP(ip netip.Addr) bool {
 // SubscribeEvents hands the caller the live event stream (web UI / SSE).
 func (s *Server) SubscribeEvents() (<-chan Event, func()) {
 	return s.hub.Subscribe()
+}
+
+// Publish emits one event to every web-UI subscriber. The web API uses it to
+// surface login-failure attempts from its own HTTP layer (webapi package
+// cannot see the session internals).
+func (s *Server) Publish(ev Event) {
+	s.hub.Publish(ev)
 }
 
 // Run listens on cfg.BindPort and serves client sessions until ctx is

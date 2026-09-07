@@ -3,7 +3,7 @@
 
 name: "my-lan"          # optional label shown in the server web UI
 server_addr: 127.0.0.1  # public server
-server_port: 10101
+server_port: 10010
 token: "change-me"      # must match the server
 
 tunnels:

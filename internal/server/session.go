@@ -145,23 +145,40 @@ func (s *session) run() {
 }
 
 // login reads the Login frame, verifies the token and binds remote ports.
+// Failed attempts are rate-limited per source IP (internal/throttle): a
+// locked IP is closed before the login frame is even read.
 func (s *session) login(br *bufio.Reader) error {
+	if ok, wait := s.srv.ctlLimiter.Allow(s.remoteHost); !ok {
+		ev := newEvent(EvAuthFail)
+		ev.ClientIP = s.remoteHost
+		ev.Reason = "rate limited"
+		ev.Detail = fmt.Sprintf("locked for %s", wait.Round(time.Second))
+		s.srv.hub.Publish(ev)
+		s.log.Warn("login rate-limited", "ip", s.remoteHost, "lock_left", wait.Round(time.Second))
+		return fmt.Errorf("login rate limited for %s", wait.Round(time.Second))
+	}
 	_ = s.conn.SetReadDeadline(time.Now().Add(loginTimeout))
 	f, err := protocol.ReadFrame(br)
 	if err != nil {
+		// No login frame (EOF/timeout): a port probe, not a credential
+		// attempt — ignore without penalizing the IP.
 		return fmt.Errorf("no login frame: %w", err)
 	}
 	if f.Type != protocol.TypeLogin {
+		s.failAuth("protocol violation")
 		return fmt.Errorf("first frame is %s, want login", protocol.TypeName(f.Type))
 	}
 	var req protocol.Login
 	if err := json.Unmarshal(f.Payload, &req); err != nil {
+		s.failAuth("malformed login")
 		return fmt.Errorf("bad login payload: %w", err)
 	}
 	if !s.verifyToken(req.Token) {
+		s.failAuth("token mismatch")
 		_ = s.sw.WriteMsg(protocol.TypeLoginResp, 0, protocol.LoginResp{OK: false, Message: "token mismatch"})
 		return errors.New("token mismatch")
 	}
+	s.srv.ctlLimiter.Reset(s.remoteHost) // valid token: clear any lock history
 	if len(req.Tunnels) == 0 {
 		_ = s.sw.WriteMsg(protocol.TypeLoginResp, 0, protocol.LoginResp{OK: false, Message: "no tunnels requested"})
 		return errors.New("no tunnels requested")
@@ -210,6 +227,16 @@ func (s *session) login(br *bufio.Reader) error {
 
 func (s *session) verifyToken(got string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(s.srv.cfg.Token)) == 1
+}
+
+// failAuth records one rejected login attempt (per-IP limiter + UI event).
+func (s *session) failAuth(reason string) {
+	s.srv.ctlLimiter.Fail(s.remoteHost)
+	ev := newEvent(EvAuthFail)
+	ev.ClientIP = s.remoteHost
+	ev.Reason = reason
+	s.srv.hub.Publish(ev)
+	s.log.Warn("login rejected", "ip", s.remoteHost, "reason", reason)
 }
 
 // acceptLoop accepts public connections on one remote port and, if the peer

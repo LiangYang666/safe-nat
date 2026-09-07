@@ -14,7 +14,7 @@
 - ✅ **SOCKS5 代理**：把客户端所在的局域网变成可浏览的网络（出网代理场景）
 - ✅ 心跳保活 + 断线指数退避重连（±20% 抖动防重连风暴）
 - ✅ 单二进制部署（前端 embed + 纯 Go sqlite，免 cgo，可交叉编译上路由器 / NAS）
-- ✅ 登录失败节流、token 常量时间比较、session cookie（HttpOnly + SameSite=Lax）
+- ✅ **防爆破**：Web 登录与控制口接入按 IP 递增锁定（5 错 → 1m/5m/15m），失败尝试实时上安全日志
 
 ## 架构
 
@@ -23,12 +23,12 @@
 ┌──────────────────────────────────────────┐      ┌───────────────────────────────┐
 │  safe-nat server（云服务器）              │      │  safe-nat client（LAN 机器）    │
 │                                          │ 控制 │                               │
-│  · 控制监听 :10101   ◄══════════════════►│ 连接 │  · 拨号 server:10101           │
+│  · 控制监听 :10010   ◄══════════════════►│ 连接 │  · 拨号 server:10010           │
 │  · 每条隧道绑一个远端端口 :40022          │      │  · 按配置拨号 local_ip:port    │
 │     ├─ accept 时校验来源 IP（白名单）     │ 帧   │  · SOCKS5 目标由 server 解析后  │
 │     ├─ 命中 → Open 帧让 client 拨号       │ 多路 │    通知本端拨号                │
 │     └─ 拒绝 → 计数 + 安全日志事件         │ 复用 │                               │
-│  · Web 管理 :10102（embed SPA）           │      │                               │
+│  · Web 管理 :10086（embed SPA）           │      │                               │
 └──────────────────────────────────────────┘      └───────────────────────────────┘
        数据面与信令复用同一条控制 TCP（帧头 connID 区分），client 只出一条出站连接。
 ```
@@ -46,17 +46,17 @@ safenat server -c config_server.yaml
 `config_server.yaml`：
 
 ```yaml
-bind_port: 10101   # 控制端口：客户端连这里
+bind_port: 10010   # 控制端口：客户端连这里
 token: "change-me"          # 客户端接入凭证，务必修改
 
 web:                       # 存在即启用管理面板 + 白名单防火墙
-  bind_port: 10102
+  bind_port: 10086
   username: admin
   password: "change-me"    # 务必修改
   db_path: data/safenat.db # sqlite 白名单库，自动创建
 ```
 
-浏览器打开 `http://<server>:10102` 登录。**先把你自己当前的公网 IP 加进白名单**（否则后面所有受保护端口都会拒绝你）。
+浏览器打开 `http://<server>:10086` 登录。**先把你自己当前的公网 IP 加进白名单**（否则后面所有受保护端口都会拒绝你）。
 
 ### 2. 客户端（内网机器）
 
@@ -69,7 +69,7 @@ safenat client -c config_client.yaml
 ```yaml
 name: "home-server"        # 可选：Web 面板里显示的标签
 server_addr: 1.2.3.4       # 云服务器
-server_port: 10101
+server_port: 10010
 token: "change-me"         # 与服务端一致
 
 tunnels:
@@ -103,9 +103,9 @@ curl --socks5-hostname <server>:7999 http://intranet.example/   # SOCKS5 代理
 
 | 段 | 字段 | 说明 | 默认 |
 |---|---|---|---|
-| server | `bind_port` | 控制端口 | 10101 |
+| server | `bind_port` | 控制端口 | 10010 |
 | server | `token` | 客户端接入凭证 | `123456`（有警告） |
-| server.web | `bind_port` / `username` / `password` / `db_path` | 管理面板；**配置了 web 段才启用防火墙** | admin / 123456 / data/safenat.db |
+| server.web | `bind_port` / `username` / `password` / `db_path` | 管理面板；**配置了 web 段才启用防火墙** | 10086 / admin / 123456 / data/safenat.db |
 | client | `name` | Web 面板显示名 | 来源 IP |
 | client | `server_addr` / `server_port` / `token` | 服务端地址与凭证 | - |
 | client.tunnels.\<name> | `type` | `tcp` | tcp |
@@ -120,20 +120,21 @@ curl --socks5-hostname <server>:7999 http://intranet.example/   # SOCKS5 代理
 
 | Method | Path | 说明 |
 |---|---|---|
-| POST | `/api/login` | 登录（失败 5 次/IP/分钟 锁定） |
+| POST | `/api/login` | 登录（失败 5 次 → 按 IP 递增锁定：1m → 5m → 15m，成功即清零） |
 | POST | `/api/logout` · GET `/api/session` | 登出 / 会话探测 |
 | GET | `/api/tunnels` · `/api/sessions` | 隧道 / 在线客户端状态 |
 | GET | `/api/stats` | 汇总：客户端、连接、累计拦截、运行时长 |
 | GET/POST | `/api/whitelist` · DELETE `/api/whitelist/{id}` | 白名单 CRUD |
-| GET | `/api/events` | SSE 实时事件（conn_open / conn_close / blocked / client_up / client_down） |
+| GET | `/api/events` | SSE 实时事件（conn_open / conn_close / blocked / client_up / client_down / auth_fail / login_fail） |
 | GET | `/` | SPA（embed） |
 
 ## 安全模型（诚实版）
 
 - **凭证**：client 接入用 `token`（控制连接登录时校验，常量时间比较）；Web 用 `username/password`。
+- **防爆破（v0.6.0）**：Web 登录与控制口 client 接入都受**按来源 IP 的递增阶梯锁**保护——同一 IP 连续 5 次凭据错误 → 锁 1 分钟，再犯 5 次 → 5 分钟，再到 15 分钟封顶；成功凭据立即清零；锁定期内 Web 返回 `429 + Retry-After`，控制口连接在读帧前即被断开（攻击者连试探成本都拿不到）。所有被拒尝试以 `auth_fail` / `login_fail` 事件实时流入安全日志页。锁是内存态：重启进程即清零（NAT 后多客户端共享出口 IP 时，正常登录不受影响——成功即清零）。
 - **访问控制**：白名单防火墙只决定「谁能连穿透端口」；判定发生在 accept 时，已建立的连接不受中途改名单影响（v1 语义，文档见 protocol.md）。
-- **不做传输加密（v1）**：token 防未授权客户端接入，数据面明文。公网使用建议外层套 **TLS / WireGuard**（与 frp 同款取舍）；控制端口（10101）与 Web 端口（10102）建议在防火墙层仅放行你的固定 IP。v2 预留 `tls` 选项（Go 标准库自带，成本低）。
-- Web session 为内存态、无 CSRF token；请勿把面板暴露到不受信网络（见上一条）。
+- **不做传输加密（v1）**：token 防未授权客户端接入，数据面明文。公网使用建议外层套 **TLS / WireGuard**（与 frp 同款取舍）。v2 预留 `tls` 选项（Go 标准库自带，成本低）。
+- Web session 为内存态、无 CSRF token：面板默认随服务公网可达，口令强度 + 上面的阶梯锁是它的防线；更强的隔离（反代 + HTTPS、仅 VPN 可达）仍是推荐做法。
 
 ## 部署
 

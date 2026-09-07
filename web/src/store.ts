@@ -28,6 +28,8 @@ const kindStyle: Record<string, string> = {
   conn_close: 'text-slate-400',
   client_up: 'text-sky-400',
   client_down: 'text-amber-400',
+  auth_fail: 'text-orange-400',
+  login_fail: 'text-orange-400',
 }
 
 export const store = reactive({
@@ -70,6 +72,12 @@ function pushEvent(ev: ServerEvent) {
     case 'blocked':
       text = `防火墙拦截 · ${ev.tunnel} :${ev.remote_port} ← ${ev.ip} (白名单拒绝)`
       break
+    case 'auth_fail':
+      text = `客户端接入被拒 · ${ev.client_ip} · ${ev.reason ?? ''}${ev.detail ? ` · ${ev.detail}` : ''}`
+      break
+    case 'login_fail':
+      text = `登录失败 · ${ev.client_ip} · ${ev.reason ?? ''}`
+      break
     default:
       text = `${ev.type} · ${ev.detail ?? JSON.stringify(ev)}`
   }
@@ -91,7 +99,7 @@ function connectSSE() {
       /* ignore malformed frame */
     }
   }
-  for (const name of ['client_up', 'client_down', 'conn_open', 'conn_close', 'blocked']) {
+  for (const name of ['client_up', 'client_down', 'conn_open', 'conn_close', 'blocked', 'auth_fail', 'login_fail']) {
     sse.addEventListener(name, onMessage)
   }
   sse.onerror = () => {

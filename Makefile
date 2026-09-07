@@ -23,7 +23,7 @@ fmt-check:
 	$(GO) vet ./...
 
 web:
-	cd web && $(NPM) ci && $(NPM) run build
+	cd web && $(NPM) ci --include=dev && $(NPM) run build
 
 # Quick cross-compile smoke targets (full matrix lives in CI release.yml).
 dist:

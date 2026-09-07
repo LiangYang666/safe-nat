@@ -11,6 +11,8 @@ const kinds: Record<string, { label: string; dot: string }> = {
   conn_close: { label: 'conn_close', dot: 'bg-slate-600' },
   client_up: { label: 'client_up', dot: 'bg-sky-500' },
   client_down: { label: 'client_down', dot: 'bg-amber-500' },
+  auth_fail: { label: 'auth_fail', dot: 'bg-orange-500' },
+  login_fail: { label: 'login_fail', dot: 'bg-orange-500' },
 }
 
 const rows = computed(() => (paused.value ? store.events.slice(0, keep.value) : store.events))

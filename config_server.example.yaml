@@ -1,13 +1,13 @@
 # safe-nat server config (cloud side).
 # Copy to config_server.yaml and adjust.
 
-bind_port: 10101   # control port; the client connects here
+bind_port: 10010   # control port; the client connects here
 token: "change-me"
 
 # Enables the web management UI (login, whitelist CRUD, live tunnel state)
 # and the IP-whitelist firewall. Remove the block to disable both.
 web:
-  bind_port: 10102
+  bind_port: 10086
   username: admin
   password: "change-me"
   db_path: data/safenat.db   # sqlite whitelist store (created automatically)

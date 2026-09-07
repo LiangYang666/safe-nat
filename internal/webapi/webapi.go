@@ -16,6 +16,7 @@ import (
 
 	"github.com/LiangYang666/safe-nat/internal/config"
 	"github.com/LiangYang666/safe-nat/internal/server"
+	"github.com/LiangYang666/safe-nat/internal/throttle"
 )
 
 //go:embed static
@@ -23,22 +24,22 @@ var staticFS embed.FS
 
 // WebAPI owns the HTTP server and the auth session store.
 type WebAPI struct {
-	srv           *server.Server // management state + event hub
-	wc            *config.WebConfig
-	log           *slog.Logger
-	sess          *sessionStore
-	loginThrottle *throttle
+	srv          *server.Server // management state + event hub
+	wc           *config.WebConfig
+	log          *slog.Logger
+	sess         *sessionStore
+	loginLimiter *throttle.Limiter // per-IP escalating lock on failed logins
 }
 
 // Run serves the management UI/API on wc.BindPort until ctx is cancelled.
 // A bind failure is returned synchronously so the caller can fail fast.
 func Run(ctx context.Context, srv *server.Server, wc *config.WebConfig, log *slog.Logger) error {
 	a := &WebAPI{
-		srv:           srv,
-		wc:            wc,
-		log:           log,
-		sess:          newSessionStore(sessionTTL),
-		loginThrottle: newThrottle(),
+		srv:          srv,
+		wc:           wc,
+		log:          log,
+		sess:         newSessionStore(sessionTTL),
+		loginLimiter: throttle.New(),
 	}
 	addr := fmt.Sprintf(":%d", wc.BindPort)
 	ln, err := net.Listen("tcp", addr)

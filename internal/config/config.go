@@ -90,8 +90,8 @@ func LoadServer(path string) (*ServerConfig, []string, error) {
 	}
 	var warns []string
 	if cfg.BindPort == 0 {
-		cfg.BindPort = 10101
-		warns = append(warns, "bind_port unset, using 10101")
+		cfg.BindPort = 10010
+		warns = append(warns, "bind_port unset, using 10010")
 	}
 	if cfg.Token == "" {
 		cfg.Token = "123456"
@@ -101,6 +101,10 @@ func LoadServer(path string) (*ServerConfig, []string, error) {
 		return nil, warns, err
 	}
 	if cfg.Web != nil {
+		if cfg.Web.BindPort == 0 {
+			cfg.Web.BindPort = 10086
+			warns = append(warns, "web.bind_port unset, using 10086")
+		}
 		if err := checkPort("web.bind_port", cfg.Web.BindPort); err != nil {
 			return nil, warns, err
 		}
@@ -135,8 +139,8 @@ func LoadClient(path string) (*ClientConfig, []string, error) {
 		return nil, warns, fmt.Errorf("config: server_addr is required")
 	}
 	if cfg.ServerPort == 0 {
-		cfg.ServerPort = 10101
-		warns = append(warns, "server_port unset, using 10101")
+		cfg.ServerPort = 10010
+		warns = append(warns, "server_port unset, using 10010")
 	}
 	if cfg.Token == "" {
 		return nil, warns, fmt.Errorf("config: token is required (must match server)")

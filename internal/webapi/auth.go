@@ -5,17 +5,20 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"math"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
+
+	"github.com/LiangYang666/safe-nat/internal/server"
 )
 
 const (
-	cookieName    = "safenat_session"
-	maxLoginFails = 5 // per IP per window
-	loginWindow   = 60 * time.Second
-	sessionTTL    = 12 * time.Hour
+	cookieName = "safenat_session"
+	sessionTTL = 12 * time.Hour
 )
 
 // ---------- session store ----------
@@ -87,55 +90,7 @@ func (ss *sessionStore) cleanupLoop() {
 	}
 }
 
-// ---------- login throttle ----------
-
-type failInfo struct {
-	count int
-	until time.Time // when the IP may try again
-}
-
-type throttle struct {
-	mu    sync.Mutex
-	fails map[string]*failInfo
-}
-
-func newThrottle() *throttle { return &throttle{fails: make(map[string]*failInfo)} }
-
-// allow reports whether ip may attempt a login right now.
-func (t *throttle) allow(ip string) bool {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	f, ok := t.fails[ip]
-	if !ok {
-		return true
-	}
-	if time.Now().After(f.until) {
-		delete(t.fails, ip)
-		return true
-	}
-	return false
-}
-
-func (t *throttle) record(ip string, ok bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if ok {
-		delete(t.fails, ip)
-		return
-	}
-	f, exists := t.fails[ip]
-	if !exists {
-		f = &failInfo{}
-		t.fails[ip] = f
-	}
-	f.count++
-	if f.count >= maxLoginFails {
-		f.until = time.Now().Add(loginWindow)
-		f.count = 0
-	}
-}
-
-// ---------- helpers ----------
+// ---------- login helpers ----------
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -173,8 +128,10 @@ func (a *WebAPI) requireSession(next http.Handler) http.Handler {
 
 func (a *WebAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
-	if !a.loginThrottle.allow(ip) {
-		writeErr(w, http.StatusTooManyRequests, "too many failed attempts, try again later")
+	if ok, wait := a.loginLimiter.Allow(ip); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(math.Ceil(wait.Seconds()))))
+		a.publishLoginFail(ip, fmt.Sprintf("rate limited (%s)", wait.Round(time.Second)))
+		writeErr(w, http.StatusTooManyRequests, "too many failed attempts, locked for "+wait.Round(time.Second).String())
 		return
 	}
 	var req struct {
@@ -188,11 +145,12 @@ func (a *WebAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 	userOK := subtle.ConstantTimeCompare([]byte(req.Username), []byte(a.wc.Username)) == 1
 	passOK := subtle.ConstantTimeCompare([]byte(req.Password), []byte(a.wc.Password)) == 1
 	if !userOK || !passOK {
-		a.loginThrottle.record(ip, false)
+		a.loginLimiter.Fail(ip)
+		a.publishLoginFail(ip, "invalid credentials")
 		writeErr(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
-	a.loginThrottle.record(ip, true)
+	a.loginLimiter.Reset(ip)
 	token, err := a.sess.create(a.wc.Username)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, "session error")
@@ -207,6 +165,13 @@ func (a *WebAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": a.wc.Username})
+}
+
+// publishLoginFail surfaces a failed web login to the live security log
+// (visible to currently logged-in admins over SSE).
+func (a *WebAPI) publishLoginFail(ip, reason string) {
+	a.log.Warn("web login rejected", "ip", ip, "reason", reason)
+	a.srv.Publish(server.Event{Type: server.EvLoginFail, Time: time.Now().UTC().Format(time.RFC3339), ClientIP: ip, Reason: reason})
 }
 
 func (a *WebAPI) handleLogout(w http.ResponseWriter, r *http.Request) {

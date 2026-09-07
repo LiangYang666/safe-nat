@@ -20,7 +20,7 @@ import (
 	"github.com/LiangYang666/safe-nat/internal/webapi"
 )
 
-const version = "0.5.0" // M4: web UI (Vue3 SPA)
+const version = "0.6.0" // hardened auth: escalating lockouts + default ports
 
 const usageText = `safenat - secure NAT penetration (Go)
 
@@ -30,9 +30,9 @@ Usage:
   safenat version                   print version
 
 Config:
-  server: bind_port (default 10101), token, optional web: section
-          (bind_port/username/password/db_path) enables the management
-          UI + IP-whitelist firewall
+  server: bind_port (default 10010), token, optional web: section
+          (bind_port default 10086 / username / password / db_path)
+          enables the management UI + IP-whitelist firewall
   client: name (optional label), server_addr, server_port, token, tunnels:
             <name>: { local_ip, local_port, remote_port, firewall }
 
