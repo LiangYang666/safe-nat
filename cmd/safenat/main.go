@@ -17,9 +17,10 @@ import (
 	"github.com/LiangYang666/safe-nat/internal/client"
 	"github.com/LiangYang666/safe-nat/internal/config"
 	"github.com/LiangYang666/safe-nat/internal/server"
+	"github.com/LiangYang666/safe-nat/internal/webapi"
 )
 
-const version = "0.2.0" // M1: minimal tunnel loop
+const version = "0.3.0" // M2: web management + whitelist firewall
 
 const usageText = `safenat - secure NAT penetration (Go)
 
@@ -29,8 +30,10 @@ Usage:
   safenat version                   print version
 
 Config:
-  server: bind_port (default 10101), token, optional web: section (M2)
-  client: server_addr, server_port, token, tunnels:
+  server: bind_port (default 10101), token, optional web: section
+          (bind_port/username/password/db_path) enables the management
+          UI + IP-whitelist firewall
+  client: name (optional label), server_addr, server_port, token, tunnels:
             <name>: { local_ip, local_port, remote_port, firewall }
 
 Design doc: tasks/20260906-go-liangnat/design.md
@@ -100,12 +103,30 @@ func runServer(args []string) int {
 	for _, w := range warns {
 		log.Warn(w)
 	}
+
+	srv, err := server.New(cfg, log)
+	if err != nil {
+		log.Error("server init failed", "err", err)
+		return 1
+	}
+	defer srv.Close()
+
 	ctx, stop := signalCtx()
 	defer stop()
-	if err := server.Run(ctx, cfg, log); err != nil {
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errCh := make(chan error, 2)
+	go func() { errCh <- srv.Run(cctx) }()
+	if cfg.Web != nil {
+		go func() { errCh <- webapi.Run(cctx, srv, cfg.Web, log) }()
+	}
+	if err := <-errCh; err != nil {
+		cancel()
 		log.Error("server exited", "err", err)
 		return 1
 	}
+	cancel()
 	return 0
 }
 

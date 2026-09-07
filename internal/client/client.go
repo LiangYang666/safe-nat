@@ -99,10 +99,11 @@ func (c *Client) runOnce(ctx context.Context) error {
 	br := bufio.NewReaderSize(conn, dataBufSize)
 
 	// 1) login
-	req := protocol.Login{Token: c.cfg.Token}
+	req := protocol.Login{Token: c.cfg.Token, Name: c.cfg.Name}
 	for _, e := range c.entries {
 		req.Tunnels = append(req.Tunnels, protocol.Tunnel{
 			Name:       e.name,
+			Type:       e.cfg.Type,
 			RemotePort: uint16(e.cfg.RemotePort),
 			Firewall:   e.cfg.FirewallEnabled(),
 		})

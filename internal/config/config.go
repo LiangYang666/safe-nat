@@ -24,12 +24,14 @@ type WebConfig struct {
 	BindPort int    `yaml:"bind_port"`
 	Username string `yaml:"username"`
 	Password string `yaml:"password"`
+	DBPath   string `yaml:"db_path"` // sqlite file for the whitelist; default data/safenat.db
 }
 
 // ---------- client ----------
 
 // ClientConfig mirrors config_client.yaml.
 type ClientConfig struct {
+	Name       string                  `yaml:"name"` // optional label shown in the web UI
 	ServerAddr string                  `yaml:"server_addr"`
 	ServerPort int                     `yaml:"server_port"`
 	Token      string                  `yaml:"token"`
@@ -100,6 +102,10 @@ func LoadServer(path string) (*ServerConfig, []string, error) {
 			cfg.Web.Password = "123456"
 			warns = append(warns, "web.password unset, using default — change it")
 		}
+		if cfg.Web.DBPath == "" {
+			cfg.Web.DBPath = "data/safenat.db"
+			warns = append(warns, "web.db_path unset, using \"data/safenat.db\"")
+		}
 	}
 	return &cfg, warns, nil
 }
@@ -111,6 +117,7 @@ func LoadClient(path string) (*ClientConfig, []string, error) {
 		return nil, nil, err
 	}
 	var warns []string
+	cfg.Name = strings.TrimSpace(cfg.Name)
 	if cfg.ServerAddr == "" {
 		return nil, warns, fmt.Errorf("config: server_addr is required")
 	}

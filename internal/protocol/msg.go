@@ -10,12 +10,14 @@ import (
 // Login is sent by the client once, immediately after the TCP connect.
 type Login struct {
 	Token   string   `json:"token"`
+	Name    string   `json:"name,omitempty"` // optional client label for the web UI
 	Tunnels []Tunnel `json:"tunnels"`
 }
 
 // Tunnel describes one port mapping the client asks the server to expose.
 type Tunnel struct {
 	Name       string `json:"name"`
+	Type       string `json:"type,omitempty"` // "tcp" (default); "socks5" (M3)
 	RemotePort uint16 `json:"remote_port"`
 	Firewall   bool   `json:"firewall"` // when true (default), accept is gated by whitelist
 }

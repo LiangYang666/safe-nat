@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>safe-nat · 管理面板</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      background: #0b0f14; color: #cbd5e1; min-height: 100vh;
+      display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 18px;
+    }
+    .card {
+      border: 1px solid #1f2937; border-radius: 14px; padding: 48px 56px;
+      background: #11161d; text-align: center; max-width: 480px;
+    }
+    h1 { font-size: 22px; color: #e2e8f0; letter-spacing: 1px; margin-bottom: 10px; }
+    .logo { color: #34d399; font-weight: 700; }
+    p { color: #64748b; font-size: 13px; line-height: 1.7; }
+    .tag { display: inline-block; margin-top: 16px; padding: 4px 10px; border: 1px solid #22d3ee33;
+           color: #22d3ee; border-radius: 999px; font-size: 11px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1><span class="logo">safe-nat</span> 管理面板</h1>
+    <p>Web UI 构建中（M4）。API 已就绪：<br>登录、白名单 CRUD、隧道状态、SSE 实时事件均可通过 <code>/api/*</code> 调用。</p>
+    <span class="tag">go embed · single binary</span>
+  </div>
+</body>
+</html>

@@ -2,6 +2,10 @@
 // connections from clients, binds their requested remote ports, enforces the
 // whitelist firewall at accept time and pumps tunneled data over the single
 // control connection (design.md §3).
+//
+// The package also hosts the shared management state — session registry,
+// whitelist store, event hub and aggregated stats — that internal/webapi
+// exposes over HTTP.
 package server
 
 import (
@@ -9,26 +13,89 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/netip"
+	"sort"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/LiangYang666/safe-nat/internal/config"
+	"github.com/LiangYang666/safe-nat/internal/whitelist"
 )
 
-// Server owns the control listener and accepts client sessions.
+// Server is the control-plane manager: it owns the control listener, the
+// registry of live client sessions, the whitelist store (when web management
+// is enabled) and the event hub consumed by the web UI.
 type Server struct {
-	cfg *config.ServerConfig
-	log *slog.Logger
+	cfg   *config.ServerConfig
+	log   *slog.Logger
+	store *whitelist.Store // non-nil iff cfg.Web != nil
+	hub   *Hub
+	start time.Time
+
+	mu       sync.Mutex
+	sessions map[*session]struct{}
+
+	blockedTotal atomic.Uint64 // firewall denials across all tunnels, lifetime
 }
 
-// Run listens on cfg.BindPort until ctx is cancelled.
-func Run(ctx context.Context, cfg *config.ServerConfig, log *slog.Logger) error {
-	s := &Server{cfg: cfg, log: log}
-	addr := fmt.Sprintf(":%d", cfg.BindPort)
+// New builds the manager; when web management is configured it opens (or
+// creates) the whitelist database.
+func New(cfg *config.ServerConfig, log *slog.Logger) (*Server, error) {
+	s := &Server{
+		cfg:      cfg,
+		log:      log,
+		hub:      NewHub(),
+		start:    time.Now(),
+		sessions: make(map[*session]struct{}),
+	}
+	if cfg.Web != nil {
+		store, err := whitelist.Open(cfg.Web.DBPath)
+		if err != nil {
+			return nil, err
+		}
+		s.store = store
+		log.Info("whitelist store opened", "db", cfg.Web.DBPath)
+	}
+	return s, nil
+}
+
+// Close releases the whitelist database.
+func (s *Server) Close() {
+	if s.store != nil {
+		_ = s.store.Close()
+	}
+}
+
+// Config exposes the server config to consumers (e.g. webapi).
+func (s *Server) Config() *config.ServerConfig { return s.cfg }
+
+// Whitelist returns the whitelist store, or nil when web management is off.
+func (s *Server) Whitelist() *whitelist.Store { return s.store }
+
+// AllowIP is the firewall predicate consulted at accept time: with web
+// management disabled every IP is allowed (LiangNat parity).
+func (s *Server) AllowIP(ip netip.Addr) bool {
+	if s.store == nil {
+		return true
+	}
+	return s.store.Contains(ip)
+}
+
+// SubscribeEvents hands the caller the live event stream (web UI / SSE).
+func (s *Server) SubscribeEvents() (<-chan Event, func()) {
+	return s.hub.Subscribe()
+}
+
+// Run listens on cfg.BindPort and serves client sessions until ctx is
+// cancelled or the listener fails.
+func (s *Server) Run(ctx context.Context) error {
+	addr := fmt.Sprintf(":%d", s.cfg.BindPort)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("server: listen %s: %w", addr, err)
 	}
-	log.Info("server listening", "addr", ln.Addr().String(), "web", cfg.Web != nil)
+	s.log.Info("server listening", "addr", ln.Addr().String(), "web", s.cfg.Web != nil)
 
 	var sessions sync.WaitGroup
 	go func() {
@@ -50,6 +117,132 @@ func Run(ctx context.Context, cfg *config.ServerConfig, log *slog.Logger) error 
 		}()
 	}
 	sessions.Wait()
-	log.Info("server stopped")
+	s.log.Info("server stopped")
 	return nil
+}
+
+// ---------- management views (consumed by internal/webapi) ----------
+
+// SessionView summarizes one connected client for the UI.
+type SessionView struct {
+	Client    string `json:"client"`
+	Addr      string `json:"addr"`
+	Connected string `json:"connected"` // RFC3339 UTC
+	Tunnels   int    `json:"tunnels"`
+	Conns     int    `json:"conns"`
+}
+
+// TunnelView summarizes one live tunnel across the whole server.
+type TunnelView struct {
+	Name       string `json:"name"`
+	Type       string `json:"type"`
+	RemotePort uint16 `json:"remote_port"`
+	Firewall   bool   `json:"firewall"`
+	Client     string `json:"client"`
+	ConnActive int    `json:"conn_active"`
+	ConnTotal  uint64 `json:"conn_total"`
+	Blocked    uint64 `json:"blocked"`
+}
+
+// StatsView is the aggregate dashboard state.
+type StatsView struct {
+	UptimeSec    int64  `json:"uptime_sec"`
+	Clients      int    `json:"clients"`
+	Tunnels      int    `json:"tunnels"`
+	ConnActive   int    `json:"conn_active"`
+	ConnTotal    uint64 `json:"conn_total"`
+	BlockedTotal uint64 `json:"blocked_total"`
+	Whitelist    int    `json:"whitelist_rules"`
+}
+
+func (s *Server) sessionsSnapshot() []*session {
+	s.mu.Lock()
+	out := make([]*session, 0, len(s.sessions))
+	for sess := range s.sessions {
+		out = append(out, sess)
+	}
+	s.mu.Unlock()
+	return out
+}
+
+// Sessions lists connected clients.
+func (s *Server) Sessions() []SessionView {
+	snaps := s.sessionsSnapshot()
+	views := make([]SessionView, 0, len(snaps))
+	for _, sess := range snaps {
+		sess.mu.Lock()
+		tunnels := len(sess.tunnels)
+		conns := len(sess.conns)
+		connected := sess.joinedAt.Format(time.RFC3339)
+		client, addr := sess.label(), sess.conn.RemoteAddr().String()
+		sess.mu.Unlock()
+		views = append(views, SessionView{Client: client, Addr: addr, Connected: connected, Tunnels: tunnels, Conns: conns})
+	}
+	sort.Slice(views, func(i, j int) bool { return views[i].Client < views[j].Client })
+	return views
+}
+
+// Tunnels lists every live tunnel with per-tunnel counters.
+func (s *Server) Tunnels() []TunnelView {
+	snaps := s.sessionsSnapshot()
+	var views []TunnelView
+	for _, sess := range snaps {
+		sess.mu.Lock()
+		for _, t := range sess.tunnels {
+			active := 0
+			for _, pc := range sess.conns {
+				if pc.tun == t {
+					active++
+				}
+			}
+			views = append(views, TunnelView{
+				Name:       t.name,
+				Type:       t.typ,
+				RemotePort: t.remotePort,
+				Firewall:   t.firewall,
+				Client:     sess.label(),
+				ConnActive: active,
+				ConnTotal:  t.opened.Load(),
+				Blocked:    t.blocked.Load(),
+			})
+		}
+		sess.mu.Unlock()
+	}
+	sort.Slice(views, func(i, j int) bool {
+		if views[i].RemotePort != views[j].RemotePort {
+			return views[i].RemotePort < views[j].RemotePort
+		}
+		return views[i].Client < views[j].Client
+	})
+	return views
+}
+
+// Stats aggregates the dashboard counters.
+func (s *Server) Stats() StatsView {
+	st := StatsView{
+		UptimeSec:    int64(time.Since(s.start).Seconds()),
+		BlockedTotal: s.blockedTotal.Load(),
+	}
+	if s.store != nil {
+		st.Whitelist = s.store.Count()
+	}
+	for _, t := range s.Tunnels() {
+		st.Tunnels++
+		st.ConnActive += t.ConnActive
+		st.ConnTotal += t.ConnTotal
+	}
+	st.Clients = len(s.Sessions())
+	return st
+}
+
+func (s *Server) addSession(sess *session) {
+	s.mu.Lock()
+	s.sessions[sess] = struct{}{}
+	s.mu.Unlock()
+}
+
+func (s *Server) removeSession(sess *session) {
+	s.mu.Lock()
+	delete(s.sessions, sess)
+	s.mu.Unlock()
 }
