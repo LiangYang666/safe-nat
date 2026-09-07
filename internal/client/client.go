@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"sort"
 	"sync"
@@ -29,6 +30,7 @@ const (
 	localDialTimeout  = 10 * time.Second
 	backoffBase       = 1 * time.Second
 	backoffMax        = 30 * time.Second
+	stableSession     = 30 * time.Second // session lasting this long resets the backoff
 	dataBufSize       = 32 << 10
 )
 
@@ -61,28 +63,45 @@ func New(cfg *config.ClientConfig, log *slog.Logger) *Client {
 }
 
 // Run connects, and on any failure reconnects with exponential backoff
-// until ctx is cancelled.
+// until ctx is cancelled. A connection that lived long enough (stableSession)
+// is treated as a healthy baseline, so the next failure restarts from the
+// base delay instead of compounding a stale backoff.
 func (c *Client) Run(ctx context.Context) error {
 	delay := backoffBase
 	for {
 		if ctx.Err() != nil {
 			return nil
 		}
+		start := time.Now()
 		err := c.runOnce(ctx)
 		if ctx.Err() != nil {
 			return nil
 		}
-		c.log.Warn("connection lost, reconnecting", "err", err, "in", delay)
+		sleep, next := nextDelay(delay, time.Since(start))
+		delay = next
+		c.log.Warn("connection lost, reconnecting", "err", err, "in", sleep.Round(time.Millisecond))
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(delay):
-		}
-		delay *= 2
-		if delay > backoffMax {
-			delay = backoffMax
+		case <-time.After(sleep):
 		}
 	}
+}
+
+// nextDelay computes the sleep before the next reconnect attempt plus the
+// base delay for the retry after that one. Jitter (±20%) desynchronizes
+// several clients reconnecting at once after a server restart.
+func nextDelay(cur, lived time.Duration) (sleep, next time.Duration) {
+	if lived >= stableSession {
+		cur = backoffBase
+	}
+	j := 0.8 + 0.4*rand.Float64() // [0.8, 1.2)
+	sleep = time.Duration(float64(cur) * j)
+	next = cur * 2
+	if next > backoffMax {
+		next = backoffMax
+	}
+	return sleep, next
 }
 
 // runOnce performs one full connect-login-pump cycle.
@@ -106,6 +125,14 @@ func (c *Client) runOnce(ctx context.Context) error {
 			Type:       e.cfg.Type,
 			RemotePort: uint16(e.cfg.RemotePort),
 			Firewall:   e.cfg.FirewallEnabled(),
+		})
+	}
+	if c.cfg.Socks5 != nil {
+		req.Tunnels = append(req.Tunnels, protocol.Tunnel{
+			Name:       "socks5",
+			Type:       "socks5",
+			RemotePort: uint16(c.cfg.Socks5.RemotePort),
+			Firewall:   c.cfg.Socks5.FirewallEnabled(),
 		})
 	}
 	if err := sw.WriteMsg(protocol.TypeLogin, 0, req); err != nil {
@@ -209,30 +236,39 @@ func (c *Client) runOnce(ctx context.Context) error {
 			break
 		}
 		switch f.Type {
-		case protocol.TypeOpen: // public conn arrived: dial the local service
+		case protocol.TypeOpen: // public conn arrived: dial the LAN side
 			var msg protocol.Open
 			if err := json.Unmarshal(f.Payload, &msg); err != nil {
 				c.log.Debug("bad open frame", "err", err)
 				_ = sw.WriteMsg(protocol.TypeClose, f.ConnID, protocol.Close{Reason: "bad open frame"})
 				continue
 			}
-			e, ok := c.byPort[msg.RemotePort]
-			if !ok {
-				c.log.Warn("open for unknown remote port", "remote_port", msg.RemotePort)
-				_ = sw.WriteMsg(protocol.TypeClose, f.ConnID, protocol.Close{Reason: "no local tunnel"})
-				continue
+			var localAddr, name string
+			if msg.TargetPort > 0 {
+				// SOCKS5 service: the server parsed the CONNECT request and
+				// asks us to dial wherever the proxy user pointed at.
+				localAddr = net.JoinHostPort(msg.TargetHost, fmt.Sprintf("%d", msg.TargetPort))
+				name = "socks5"
+			} else {
+				e, ok := c.byPort[msg.RemotePort]
+				if !ok {
+					c.log.Warn("open for unknown remote port", "remote_port", msg.RemotePort)
+					_ = sw.WriteMsg(protocol.TypeClose, f.ConnID, protocol.Close{Reason: "no local tunnel"})
+					continue
+				}
+				localAddr = net.JoinHostPort(e.cfg.LocalIP, fmt.Sprintf("%d", e.cfg.LocalPort))
+				name = e.name
 			}
-			localAddr := net.JoinHostPort(e.cfg.LocalIP, fmt.Sprintf("%d", e.cfg.LocalPort))
 			lan, err := net.DialTimeout("tcp", localAddr, localDialTimeout)
 			if err != nil {
-				c.log.Warn("local dial failed", "name", e.name, "local", localAddr, "err", err)
+				c.log.Warn("local dial failed", "name", name, "local", localAddr, "err", err)
 				_ = sw.WriteMsg(protocol.TypeClose, f.ConnID, protocol.Close{Reason: "local dial failed: " + err.Error()})
 				continue
 			}
 			mu.Lock()
 			conns[f.ConnID] = lan
 			mu.Unlock()
-			c.log.Info("local conn opened", "name", e.name, "local", localAddr, "conn_id", f.ConnID)
+			c.log.Info("local conn opened", "name", name, "local", localAddr, "conn_id", f.ConnID)
 			wg.Add(1)
 			go pump(lan, f.ConnID)
 		case protocol.TypeData:

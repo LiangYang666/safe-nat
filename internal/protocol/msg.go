@@ -39,8 +39,13 @@ type TunnelResult struct {
 
 // Open tells the client that a public connection arrived on remote_port;
 // the frame header carries the fresh connID that both sides use afterwards.
+// For a SOCKS5 tunnel the request carries a dynamic target instead: the
+// server parsed the CONNECT request and the client must dial TargetHost:
+// TargetPort rather than a configured local endpoint (RemotePort stays 0).
 type Open struct {
 	RemotePort uint16 `json:"remote_port"`
+	TargetHost string `json:"target_host,omitempty"`
+	TargetPort uint16 `json:"target_port,omitempty"`
 }
 
 // Close tells the peer to tear down the tunneled connection connID.

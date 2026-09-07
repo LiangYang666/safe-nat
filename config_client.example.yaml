@@ -1,9 +1,10 @@
 # safe-nat client config (LAN side).
 # Copy to config_client.yaml and adjust.
 
-server_addr: 127.0.0.1   # public server
+name: "my-lan"          # optional label shown in the server web UI
+server_addr: 127.0.0.1  # public server
 server_port: 10101
-token: "change-me"       # must match the server
+token: "change-me"      # must match the server
 
 tunnels:
   ssh:
@@ -16,3 +17,11 @@ tunnels:
   #   local_port: 8011
   #   remote_port: 8011
   #   firewall: false     # open to anyone; rely on the app's own auth
+
+# Optional SOCKS5 proxy: the server binds `remote_port`, parses SOCKS5
+# CONNECT requests (no-auth) and this client dials the targets from its LAN.
+# E.g. point a browser at server_addr:7999 to browse as if you were on the
+# client's network (LiangNat-style out-of-campus access).
+# socks5:
+#   remote_port: 7999
+#   firewall: true        # (default) only whitelisted IPs may use the proxy

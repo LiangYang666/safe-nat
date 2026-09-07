@@ -4,8 +4,10 @@
 bind_port: 10101   # control port; the client connects here
 token: "change-me"
 
-# Uncomment to enable the web management UI + IP-whitelist firewall (M2+):
-# web:
-#   bind_port: 10102
-#   username: admin
-#   password: "change-me"
+# Enables the web management UI (login, whitelist CRUD, live tunnel state)
+# and the IP-whitelist firewall. Remove the block to disable both.
+web:
+  bind_port: 10102
+  username: admin
+  password: "change-me"
+  db_path: data/safenat.db   # sqlite whitelist store (created automatically)

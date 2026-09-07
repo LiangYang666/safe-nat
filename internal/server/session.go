@@ -242,15 +242,14 @@ func (s *session) acceptLoop(t *tunnel) {
 			_ = c.Close()
 			continue
 		}
-		id := s.connID.Add(1)
-		pc := &pubConn{c: c, tun: t, ip: ip}
-		s.mu.Lock()
-		s.conns[id] = pc
-		s.mu.Unlock()
-		t.opened.Add(1)
-		ev := s.evBase(EvConnOpen)
-		ev.Tunnel, ev.TypeTunnel, ev.RemotePort, ev.IP, ev.ConnID = t.name, t.typ, t.remotePort, ip.String(), id
-		s.srv.hub.Publish(ev)
+		if t.typ == "socks5" {
+			// SOCKS5 tunnels speak their handshake first; the parsed target
+			// is then forwarded to the client, which dials it in its LAN.
+			s.wg.Add(1)
+			go func() { defer s.wg.Done(); s.serveSocks5(c, t) }()
+			continue
+		}
+		id, pc := s.openPubConn(t, c, ip)
 		s.log.Info("tunnel conn open", "conn_id", id, "ip", ip.String(), "port", t.remotePort)
 		if err := s.sw.WriteMsg(protocol.TypeOpen, id, protocol.Open{RemotePort: t.remotePort}); err != nil {
 			s.closeConn(id)
@@ -260,6 +259,48 @@ func (s *session) acceptLoop(t *tunnel) {
 		s.wg.Add(1)
 		go s.pump(pc, id)
 	}
+}
+
+// openPubConn registers an accepted public conn: allocates its connID, tracks
+// it in the session map, bumps counters and publishes the UI event.
+func (s *session) openPubConn(t *tunnel, c net.Conn, ip netip.Addr) (uint32, *pubConn) {
+	id := s.connID.Add(1)
+	pc := &pubConn{c: c, tun: t, ip: ip}
+	s.mu.Lock()
+	s.conns[id] = pc
+	s.mu.Unlock()
+	t.opened.Add(1)
+	ev := s.evBase(EvConnOpen)
+	ev.Tunnel, ev.TypeTunnel, ev.RemotePort, ev.IP, ev.ConnID = t.name, t.typ, t.remotePort, ip.String(), id
+	s.srv.hub.Publish(ev)
+	return id, pc
+}
+
+// serveSocks5 handles one accepted SOCKS5 connection: handshake, then a
+// dynamic Open to the client carrying the CONNECT target. It runs in its own
+// goroutine already accounted on s.wg by acceptLoop (no wg bookkeeping here).
+func (s *session) serveSocks5(c net.Conn, t *tunnel) {
+	host, port, err := handshakeSocks5(c)
+	if err != nil {
+		s.log.Debug("socks5 handshake failed", "err", err, "from", c.RemoteAddr().String())
+		_ = c.Close()
+		return
+	}
+	id, pc := s.openPubConn(t, c, peerIP(c.RemoteAddr()))
+	// Optimistic success reply: the LAN dial happens on the client and its
+	// outcome is not known here; a failed dial shows up as an immediate
+	// reset to the SOCKS5 user (acceptable for v1, see design.md).
+	if err := writeSocks5Reply(c, 0x00); err != nil {
+		s.teardownConn(id, "socks5 reply: "+err.Error())
+		return
+	}
+	if err := s.sw.WriteMsg(protocol.TypeOpen, id, protocol.Open{TargetHost: host, TargetPort: port}); err != nil {
+		s.teardownConn(id, "open send failed")
+		s.shutdown()
+		return
+	}
+	s.log.Info("socks5 target opened", "conn_id", id, "target", joinTarget(host, port))
+	s.pumpCore(pc, id)
 }
 
 // ipAllowed is the accept-time firewall: enforced only when the whitelist
@@ -272,10 +313,16 @@ func (s *session) ipAllowed(ip netip.Addr, t *tunnel) bool {
 	return s.srv.AllowIP(ip)
 }
 
-// pump streams one public conn's data into Data frames; on EOF it asks the
-// client to close its LAN end.
+// pump wraps pumpCore with the session WaitGroup accounting (dispatch form).
 func (s *session) pump(pc *pubConn, id uint32) {
 	defer s.wg.Done()
+	s.pumpCore(pc, id)
+}
+
+// pumpCore streams one public conn's data into Data frames; on EOF it asks
+// the client to close its LAN end. Runs inline when the caller already holds
+// a WaitGroup slot (serveSocks5).
+func (s *session) pumpCore(pc *pubConn, id uint32) {
 	buf := make([]byte, dataBufSize)
 	for {
 		n, err := pc.c.Read(buf)

@@ -36,6 +36,19 @@ type ClientConfig struct {
 	ServerPort int                     `yaml:"server_port"`
 	Token      string                  `yaml:"token"`
 	Tunnels    map[string]TunnelConfig `yaml:"tunnels"`
+	Socks5     *Socks5Config           `yaml:"socks5"` // optional built-in SOCKS5 proxy (M3)
+}
+
+// Socks5Config enables a SOCKS5 proxy service: the server binds
+// remote_port and parses CONNECT requests; the client dials the targets.
+type Socks5Config struct {
+	RemotePort int   `yaml:"remote_port"`
+	Firewall   *bool `yaml:"firewall"` // default true: whitelist-gate proxy users
+}
+
+// FirewallEnabled resolves the *bool default.
+func (s *Socks5Config) FirewallEnabled() bool {
+	return s.Firewall == nil || *s.Firewall
 }
 
 // TunnelConfig is one port mapping.
@@ -146,7 +159,7 @@ func LoadClient(path string) (*ClientConfig, []string, error) {
 			t.Type = "tcp"
 		}
 		if t.Type != "tcp" {
-			return nil, warns, fmt.Errorf("config: tunnel %q: unsupported type %q (only \"tcp\" at M1)", name, t.Type)
+			return nil, warns, fmt.Errorf("config: tunnel %q: unsupported type %q (tunnels are tcp; socks5 is a top-level section)", name, t.Type)
 		}
 		if t.LocalIP == "" {
 			t.LocalIP = "127.0.0.1"
@@ -162,6 +175,16 @@ func LoadClient(path string) (*ClientConfig, []string, error) {
 		}
 		seen[t.RemotePort] = name
 		cfg.Tunnels[name] = t
+	}
+	if cfg.Socks5 != nil {
+		if err := checkPort("socks5.remote_port", cfg.Socks5.RemotePort); err != nil {
+			return nil, warns, err
+		}
+		for name, t := range cfg.Tunnels {
+			if t.RemotePort == cfg.Socks5.RemotePort {
+				return nil, warns, fmt.Errorf("config: socks5.remote_port %d collides with tunnel %q", cfg.Socks5.RemotePort, name)
+			}
+		}
 	}
 	return &cfg, warns, nil
 }

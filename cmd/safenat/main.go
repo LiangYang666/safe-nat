@@ -20,7 +20,7 @@ import (
 	"github.com/LiangYang666/safe-nat/internal/webapi"
 )
 
-const version = "0.3.0" // M2: web management + whitelist firewall
+const version = "0.4.0" // M3: SOCKS5 proxy + reconnect hardening
 
 const usageText = `safenat - secure NAT penetration (Go)
 
