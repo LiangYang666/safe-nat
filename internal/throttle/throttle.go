@@ -20,15 +20,26 @@ import (
 const MaxFails = 5
 
 // lockSteps are the escalating lock durations; the last entry caps the
-// penalty for repeat offenders.
+// penalty for repeat offenders. Escalation is deliberately steep: a bot
+// that keeps guessing after each unlock earns exponentially longer locks,
+// topping out at a full day. Real clients are never harmed (a valid
+// credential resets the counter), and an operator who locks their own NAT
+// IP out can recover instantly by restarting the process (in-memory state).
 var lockSteps = []time.Duration{
 	1 * time.Minute,
 	5 * time.Minute,
 	15 * time.Minute,
+	1 * time.Hour,
+	6 * time.Hour,
+	24 * time.Hour,
 }
 
-// IdleReset: a lock entry untouched for this long is forgotten, giving an
-// occasional wrong-password user a clean slate without any penalty memory.
+// IdleReset: an entry that never reached a lockout (an occasional
+// wrong-password user) and has been idle this long is forgotten, giving a
+// clean slate without penalty memory. Entries that DID lock (stage > 0)
+// keep their escalated stage until a successful auth resets them — repeat
+// offenders must not regain a fresh 1-minute start just by waiting out the
+// lock.
 const IdleReset = 30 * time.Minute
 
 type info struct {
@@ -63,9 +74,10 @@ func (l *Limiter) Allow(ip string) (bool, time.Duration) {
 	if now.Before(f.until) {
 		return false, f.until.Sub(now)
 	}
-	// Lock expired. If the entry has been cold since before the lock
-	// expired by IdleReset, forget it entirely.
-	if now.Sub(f.last) > IdleReset {
+	// Lock expired. Forget only lightweight entries (never locked, idle
+	// long): locked offenders keep their escalated stage so waiting out a
+	// lock does not buy a fresh start.
+	if f.stage == 0 && now.Sub(f.last) > IdleReset {
 		delete(l.fails, ip)
 	}
 	return true, 0
