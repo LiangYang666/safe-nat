@@ -12,6 +12,7 @@ config_client.yaml
 # Web frontend (M4)
 web/node_modules/
 web/dist/
+web/*.tsbuildinfo
 
 # Editors / OS
 .DS_Store

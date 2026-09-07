@@ -1,0 +1,91 @@
+name: Release
+
+# Tag a version (e.g. `git tag v0.5.0 && git push --tags`) to build the
+# frontend once, cross-compile server+client for the matrix, and publish a
+# GitHub release with checksums.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+          - os: linux
+            arch: arm64
+          - os: linux
+            arch: arm
+            goarm: "7"
+          - os: linux
+            arch: 386
+          - os: darwin
+            arch: amd64
+          - os: darwin
+            arch: arm64
+          - os: windows
+            arch: amd64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web UI
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Cross-compile
+        env:
+          GOOS: ${{ matrix.os }}
+          GOARCH: ${{ matrix.arch }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: "0"
+        run: |
+          ext=""
+          [ "$GOOS" = "windows" ] && ext=".exe"
+          name="safenat-$GOOS-${{ matrix.arch }}${{ matrix.goarm != '' && format('-arm{0}', matrix.goarm) || '' }}$ext"
+          go build -trimpath -ldflags="-s -w" -o "dist/$name" ./cmd/safenat
+          sha256sum "dist/$name" > "dist/$name.sha256"
+          echo "artifact=$name" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: safenat-${{ matrix.os }}-${{ matrix.arch }}${{ matrix.goarm }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" artifacts/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "safe-nat $GITHUB_REF_NAME" \
+            --notes "See the [README](https://github.com/$GITHUB_REPOSITORY#readme) for quickstart and config reference." \
+            --generate-notes
