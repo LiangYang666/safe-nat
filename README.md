@@ -6,6 +6,24 @@
 
 > 与 frp 的裸端口映射相比，safe-nat 的核心差异：**暴露的端口默认被白名单防火墙保护**——公网连接在 accept 时按来源 IP 校验，命中白名单才放行；不在名单里的访问者连接会被直接拒绝并记录到安全日志。
 
+## 安装
+
+三种方式：
+
+```bash
+# 1. 下载发布版（推荐）：https://github.com/LiangYang666/safe-nat/releases
+#    选平台二进制：safenat-linux-amd64 / -linux-arm64 / -linux-arm-arm7 /
+#    -darwin-amd64 / -darwin-arm64 / -windows-amd64.exe（各带 .sha256 校验）
+chmod +x safenat-linux-arm64 && sudo mv safenat-linux-arm64 /usr/local/bin/safenat
+
+# 2. 源码安装（需要 Go 1.24+）
+go install github.com/LiangYang666/safe-nat/cmd/safenat@latest
+
+# 3. 交叉编译（客户端跑路由器/NAS），见「部署」节
+
+safenat version    # 确认装好
+```
+
 ## 特性
 
 - ✅ **TCP 端口映射**：多隧道并发，一条控制连接多路复用所有转发数据
