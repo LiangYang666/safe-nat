@@ -297,26 +297,29 @@ func runInit(args []string) int {
 }
 
 const serverInitConfig = `# safe-nat server config (cloud side). Written by "safenat init".
+# Layout convention: this file is your CONFIG (edit freely); certificates,
+# the whitelist database and other mutable state live in a data/ directory
+# next to this file by default (override with tls_cert/tls_key/db_path).
 # Transport is encrypted by default: the first start auto-generates
-# safenat-server.crt/.key next to this file. Keep them — deleting them
-# changes the fingerprint and every client will refuse to connect until
-# you delete its known_servers.txt.
+# data/safenat-server.crt/.key. Keep them — deleting them changes the
+# fingerprint and every client will refuse to connect until you delete its
+# data/known_servers.txt.
 
 bind_port: 10010   # control port; the client connects here
 token: "change-me-please-use-a-long-random-string"
 
 # Enables the web management UI (login, whitelist CRUD, live tunnel state)
 # and the IP-whitelist firewall. Remove the block to disable both.
+# db_path defaults to data/safenat.db (next to this config).
 web:
   bind_port: 10086
   username: admin
   password: "change-me-too"
-  db_path: data/safenat.db   # sqlite whitelist store (created automatically)
 `
 
 const clientInitConfig = `# safe-nat client config (LAN side). Written by "safenat init".
 # TLS is on by default: on first connect the client pins the server's
-# certificate fingerprint to known_servers.txt (next to this file) and
+# certificate fingerprint to data/known_servers.txt (next to this file) and
 # rejects it if the server ever presents a different one. If the server is
 # legitimately reinstalled, delete that file and reconnect.
 

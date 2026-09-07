@@ -23,8 +23,9 @@ type ServerConfig struct {
 
 	// TLS (auto transport encryption, v0.7). Enabled by default: the server
 	// generates a self-signed keypair on first start (tls_cert/tls_key,
-	// default <config dir>/safenat-server.crt|.key) and the client pins its
-	// fingerprint (SSH known_hosts style). Set tls: false to disable.
+	// default <config dir>/data/safenat-server.crt|.key — data stays out of
+	// the config directory) and the client pins its fingerprint. Set
+	// tls: false to disable.
 	TLS     *bool  `yaml:"tls"`
 	TLSCert string `yaml:"tls_cert"`
 	TLSKey  string `yaml:"tls_key"`
@@ -100,6 +101,13 @@ func loadFile(path string, out any) error {
 	return nil
 }
 
+// dataDir returns the default state directory for a config file: a data/
+// sibling next to the config, keeping mutable state (certificates, the
+// fingerprint store, sqlite) out of the config directory.
+func dataDir(configPath string) string {
+	return filepath.Join(filepath.Dir(configPath), "data")
+}
+
 // LoadServer reads and validates config_server.yaml.
 func LoadServer(path string) (*ServerConfig, []string, error) {
 	var cfg ServerConfig
@@ -138,12 +146,12 @@ func LoadServer(path string) (*ServerConfig, []string, error) {
 			warns = append(warns, "web.password unset, using default — change it")
 		}
 		if cfg.Web.DBPath == "" {
-			cfg.Web.DBPath = "data/safenat.db"
-			warns = append(warns, "web.db_path unset, using \"data/safenat.db\"")
+			cfg.Web.DBPath = filepath.Join(dataDir(path), "safenat.db")
+			warns = append(warns, "web.db_path unset, using \""+cfg.Web.DBPath+"\"")
 		}
 	}
 	if tlsx.Enabled(cfg.TLS) {
-		dir := filepath.Dir(path)
+		dir := dataDir(path)
 		if cfg.TLSCert == "" {
 			cfg.TLSCert = filepath.Join(dir, "safenat-server.crt")
 			warns = append(warns, "tls on: cert auto-generated at "+cfg.TLSCert)
@@ -177,7 +185,7 @@ func LoadClient(path string) (*ClientConfig, []string, error) {
 		return nil, warns, err
 	}
 	if tlsx.Enabled(cfg.TLS) && cfg.TLSFingerprints == "" {
-		cfg.TLSFingerprints = filepath.Join(filepath.Dir(path), "known_servers.txt")
+		cfg.TLSFingerprints = filepath.Join(dataDir(path), "known_servers.txt")
 		warns = append(warns, "tls on: client pins server fingerprint at "+cfg.TLSFingerprints)
 	}
 	if len(cfg.Tunnels) == 0 {

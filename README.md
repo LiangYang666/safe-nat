@@ -66,13 +66,13 @@ bind_port: 10010   # 控制端口：客户端连这里
 token: "change-me"          # 客户端接入凭证，务必修改
 
 # tls: true                # 默认开：首次启动自动生成自签证书
-#                          # safenat-server.crt/.key（配置同目录）。别删，
-#                          # 删了客户端指纹校验会全部拒连（见「安全模型」）
+#                          # data/safenat-server.crt/.key（配置同目录的 data/ 下）。
+#                          # 别删——删了客户端指纹校验会全部拒连（见「安全模型」）
 web:                       # 存在即启用管理面板 + 白名单防火墙
   bind_port: 10086
   username: admin
   password: "change-me"    # 务必修改
-  db_path: data/safenat.db # sqlite 白名单库，自动创建
+  # db_path: <配置目录>/data/safenat.db   # 白名单库（默认，自动创建）
 ```
 
 浏览器打开 `http://<server>:10086` 登录。**先把你自己当前的公网 IP 加进白名单**（否则后面所有受保护端口都会拒绝你）。
@@ -92,9 +92,9 @@ server_port: 10010
 token: "change-me"         # 与服务端一致
 
 # tls: true                # 默认开：首次连接自动信任服务器指纹并写入
-#                          # known_servers.txt（配置同目录）；之后服务器
-#                          # 换了证书会被拒连（防冒充），确认真服务器后
-#                          # 删除该文件重连即可
+#                          # data/known_servers.txt（配置同目录的 data/ 下）；
+#                          # 之后服务器换了证书会被拒连（防冒充），
+#                          # 确认真服务器后删除该文件重连即可
 
 tunnels:
   ssh:
@@ -129,16 +129,31 @@ curl --socks5-hostname <server>:7999 http://intranet.example/   # SOCKS5 代理
 |---|---|---|---|
 | server | `bind_port` | 控制端口 | 10010 |
 | server | `token` | 客户端接入凭证 | `123456`（有警告） |
-| server | `tls` / `tls_cert` / `tls_key` | 自动加密开关；证书路径（自动生成） | true / <配置目录>/safenat-server.crt·key |
-| server.web | `bind_port` / `username` / `password` / `db_path` | 管理面板；**配置了 web 段才启用防火墙** | 10086 / admin / 123456 / data/safenat.db |
+| server | `tls` / `tls_cert` / `tls_key` | 自动加密开关；证书路径（自动生成） | true / <配置目录>/data/safenat-server.crt·key |
+| server.web | `bind_port` / `username` / `password` / `db_path` | 管理面板；**配置了 web 段才启用防火墙** | 10086 / admin / 123456 / <配置目录>/data/safenat.db |
 | client | `name` | Web 面板显示名 | 来源 IP |
 | client | `server_addr` / `server_port` / `token` | 服务端地址与凭证 | - |
-| client | `tls` / `tls_fingerprints` | 加密开关；服务器指纹存储 | true / <配置目录>/known_servers.txt |
+| client | `tls` / `tls_fingerprints` | 加密开关；服务器指纹存储 | true / <配置目录>/data/known_servers.txt |
 | client.tunnels.\<name> | `type` | `tcp` | tcp |
 | | `local_ip` / `local_port` | 内网服务 | 127.0.0.1 / - |
 | | `remote_port` | 服务器公网端口（须未被占用） | - |
 | | `firewall` | 是否受白名单防火墙保护 | true |
 | client.socks5 | `remote_port` / `firewall` | 服务器上的 SOCKS5 代理端口 | - / true |
+
+## 目录约定
+
+配置与数据分开（XDG/Unix 惯例；systemd 部署见 docs/deploy.md：/etc + /var/lib）：
+
+```
+<用户配置目录>/safenat/          Linux ~/.config/safenat/ · macOS ~/Library/Application Support/safenat/
+├── server.yaml  client.yaml      ← 纯配置，你编辑的对象（safenat init 生成）
+└── data/                         ← 会变的状态，程序自动创建，别手动删
+    ├── safenat-server.crt/.key      自动生成的自签证书/私钥（server）
+    ├── safenat.db                   白名单库（server）
+    └── known_servers.txt            已信任的服务器指纹（client）
+```
+
+规则：**配置文件放配置目录，证书/私钥/数据库/指纹这些运行状态默认放旁边的 `data/`**，全部可用 yaml 字段覆盖（`tls_cert`/`tls_key`/`tls_fingerprints`/`db_path`）。备份 = 拷 `data/`（证书/指纹别丢，丢了要重新信任）；`safenat init` 不会覆盖已有配置。
 
 ## 本地运维（v0.7）
 
