@@ -20,9 +20,9 @@ import (
 )
 
 const (
-	headerLen    = 256        // reserved header bytes before the vector index
-	vecIndexSize = 8          // bytes per vector-index cell (sPtr, ePtr)
-	segIdxSize   = 14         // bytes per segment-index record
+	headerLen    = 256 // reserved header bytes before the vector index
+	vecIndexSize = 8   // bytes per vector-index cell (sPtr, ePtr)
+	segIdxSize   = 14  // bytes per segment-index record
 	vecRows      = 256
 	vecCols      = 256
 	regionSep    = "|"

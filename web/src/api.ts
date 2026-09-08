@@ -40,6 +40,8 @@ export interface WhitelistRule {
 export interface MyIpInfo {
   ip: string
   region?: string
+  covered?: boolean // already matched by an existing rule (exact or CIDR)
+  rule?: string // the stored rule covering ip, when covered
 }
 
 export interface TrafficLive {
@@ -53,6 +55,12 @@ export interface TrafficLive {
 export interface TrafficDaily {
   tunnel: string
   day: string
+  up_bytes: number
+  down_bytes: number
+}
+
+export interface TrafficSeriesRow {
+  ts: string // "YYYY-MM-DD HH:MM" or hour "YYYY-MM-DD HH:00"
   up_bytes: number
   down_bytes: number
 }
@@ -117,6 +125,10 @@ export const api = {
   trafficDaily: (days = 7, tunnel = '') =>
     request<TrafficDaily[]>(
       `/api/traffic/daily?days=${days}${tunnel ? `&tunnel=${encodeURIComponent(tunnel)}` : ''}`,
+    ),
+  trafficSeries: (days = 1, tunnel = '', bucket: 'm' | 'h' = 'm') =>
+    request<TrafficSeriesRow[]>(
+      `/api/traffic/series?days=${days}&bucket=${bucket}${tunnel ? `&tunnel=${encodeURIComponent(tunnel)}` : ''}`,
     ),
   whitelistAdd: (rule: string) =>
     request<WhitelistRule>('/api/whitelist', {

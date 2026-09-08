@@ -24,11 +24,22 @@ type DailyRow struct {
 	Down   int64  `json:"down_bytes"`
 }
 
+// SeriesRow is one time bucket of a traffic series (minute or hour).
+type SeriesRow struct {
+	Ts   string `json:"ts"` // "YYYY-MM-DD HH:MM" (minute) or "YYYY-MM-DD HH:00" (hour)
+	Up   int64  `json:"up_bytes"`
+	Down int64  `json:"down_bytes"`
+}
+
+// retentionDays bounds how long minute-level series are kept.
+const retentionDays = 7
+
 // DB persists per-day byte totals. One writer at a time; short upsert
 // transactions and busy_timeout keep contention with the whitelist store
 // (same SQLite file, separate connection) negligible.
 type DB struct {
-	db *sql.DB
+	db          *sql.DB
+	lastCleanup time.Time // throttles retention cleanup to ~every 5 min
 }
 
 // Open opens (creating if needed) the traffic table in the database at path.
@@ -63,17 +74,34 @@ func Open(path string) (*DB, error) {
 		PRIMARY KEY (tunnel, day)
 	)`); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("traffic: migrate: %w", err)
+		return nil, fmt.Errorf("traffic: migrate daily: %w", err)
 	}
-	return &DB{db: db}, nil
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS traffic_minute (
+		tunnel    TEXT NOT NULL,
+		ts        TEXT NOT NULL,          -- local "YYYY-MM-DD HH:MM"
+		up_bytes  INTEGER NOT NULL DEFAULT 0,
+		down_bytes INTEGER NOT NULL DEFAULT 0,
+		PRIMARY KEY (tunnel, ts)
+	)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("traffic: migrate minute: %w", err)
+	}
+	d := &DB{db: db}
+	d.cleanup(time.Now())
+	return d, nil
 }
 
 // Close releases the database.
 func (d *DB) Close() error { return d.db.Close() }
 
-// Record adds up/down bytes to a tunnel's daily total (idempotent
-// accumulation; safe to call per closed connection).
+// Record adds up/down bytes to a tunnel's daily total and its current
+// minute bucket (idempotent accumulation; safe to call per closed conn).
 func (d *DB) Record(tunnel, day string, up, down int64) {
+	d.RecordAt(tunnel, day, time.Now(), up, down)
+}
+
+// RecordAt is Record with an explicit timestamp (tests).
+func (d *DB) RecordAt(tunnel, day string, at time.Time, up, down int64) {
 	if up <= 0 && down <= 0 {
 		return
 	}
@@ -83,6 +111,76 @@ func (d *DB) Record(tunnel, day string, up, down int64) {
 		   up_bytes = up_bytes + excluded.up_bytes,
 		   down_bytes = down_bytes + excluded.down_bytes`,
 		tunnel, day, up, down)
+	ts := at.Format("2006-01-02 15:04")
+	_, _ = d.db.Exec(
+		`INSERT INTO traffic_minute (tunnel, ts, up_bytes, down_bytes) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(tunnel, ts) DO UPDATE SET
+		   up_bytes = up_bytes + excluded.up_bytes,
+		   down_bytes = down_bytes + excluded.down_bytes`,
+		tunnel, ts, up, down)
+	if time.Since(d.lastCleanup) > 5*time.Minute {
+		d.cleanup(time.Now())
+	}
+}
+
+// cleanup drops minute rows older than retentionDays.
+func (d *DB) cleanup(now time.Time) {
+	cutoff := now.AddDate(0, 0, -retentionDays).Format("2006-01-02 15:04")
+	if _, err := d.db.Exec(`DELETE FROM traffic_minute WHERE ts < ?`, cutoff); err == nil {
+		d.lastCleanup = now
+	}
+}
+
+// Series returns per-bucket totals in the rolling window [now-days*24h, now].
+// tunnel "" sums across every tunnel; bucket "m" yields minute rows,
+// "h" hour rows. Rows are ordered by time ascending.
+func (d *DB) Series(tunnel string, days int, bucket string) ([]SeriesRow, error) {
+	if days <= 0 {
+		days = 1
+	}
+	start := time.Now().Add(-time.Duration(days) * 24 * time.Hour)
+	startS := start.Format("2006-01-02 15:04")
+
+	where := ` WHERE ts >= ?`
+	args := []any{startS}
+	if tunnel != "" {
+		where += ` AND tunnel = ?`
+		args = append(args, tunnel)
+	}
+	if bucket == "h" {
+		// Hour bucket: group the minute rows by their hour prefix.
+		rows, err := d.db.Query(
+			`SELECT substr(ts, 1, 13) || ':00', SUM(up_bytes), SUM(down_bytes)
+			 FROM traffic_minute`+where+` GROUP BY substr(ts, 1, 13) ORDER BY 1`, args...)
+		if err != nil {
+			return nil, fmt.Errorf("traffic: series hour: %w", err)
+		}
+		defer rows.Close()
+		var out []SeriesRow
+		for rows.Next() {
+			var r SeriesRow
+			if err := rows.Scan(&r.Ts, &r.Up, &r.Down); err != nil {
+				return nil, err
+			}
+			out = append(out, r)
+		}
+		return out, rows.Err()
+	}
+	rows, err := d.db.Query(
+		`SELECT ts, SUM(up_bytes), SUM(down_bytes) FROM traffic_minute`+where+` GROUP BY ts ORDER BY ts`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("traffic: series minute: %w", err)
+	}
+	defer rows.Close()
+	var out []SeriesRow
+	for rows.Next() {
+		var r SeriesRow
+		if err := rows.Scan(&r.Ts, &r.Up, &r.Down); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // Day returns the local calendar day for a time, as YYYY-MM-DD.

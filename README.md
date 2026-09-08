@@ -30,7 +30,7 @@ safenat version    # 确认装好
 - ✅ **IP 白名单防火墙**：精确 IP + CIDR（`1.2.3.4` / `10.0.0.0/8`，IPv4/IPv6），每隧道独立开关
 - ✅ **Web 管理面板**（Vue3 暗色运维风，登录 / 总览 / 隧道 / 流量 / 白名单 / 安全日志 + SSE 实时事件）
 - ✅ **SOCKS5 代理**：把客户端所在的局域网变成可浏览的网络（出网代理场景）
-- ✅ **流量统计（v0.8）**：每隧道独立实时吞吐（1s 采样）+ 天级历史持久化（SQLite），面板「流量」页图表化展示
+- ✅ **流量统计（v0.8）**：每隧道独立实时吞吐（1s 采样）+ 分钟级曲线（SQLite，自动保留 7 天）+ 天级历史持久化，面板「流量」页曲线/柱状图悬停查看逐点数据
 - ✅ **IP 归属地标注（v0.8）**：白名单规则自动标注 ip2region 地域（离线库 embed）；面板自动识别当前访问者 IP，一键把自己加进白名单
 - ✅ 心跳保活 + 断线指数退避重连（±20% 抖动防重连风暴）
 - ✅ **自动传输加密（v0.7）**：server↔client 默认 TLS（自签 + 指纹校验，SSH known_hosts 式），零配置
@@ -169,7 +169,7 @@ curl --socks5-hostname <server>:7999 http://intranet.example/   # SOCKS5 代理
 ├── server.yaml  client.yaml      ← 纯配置，你编辑的对象（safenat init 生成）
 └── data/                         ← 会变的状态，程序自动创建，别手动删
     ├── safenat-server.crt/.key      自动生成的自签证书/私钥（server）
-    ├── safenat.db                   白名单库 + 流量日统计（server）
+    ├── safenat.db                   白名单库 + 流量统计（日/分钟序列，server）
     └── known_servers.txt            已信任的服务器指纹（client）
 ```
 
@@ -202,6 +202,7 @@ safenat logs client 50   # client 最近 50 行
 | GET | `/api/whitelist/me` | 当前访问者 IP + 地域（面板「一键加自己」） |
 | GET | `/api/traffic/live` | 各隧道实时速率与累计（1s 采样） |
 | GET | `/api/traffic/daily?days=&tunnel=` | 天级历史（SQLite，可过滤隧道，days 1–90） |
+| GET | `/api/traffic/series?days=&bucket=&tunnel=` | 分钟级曲线（days 1–7，bucket `m`/`h`，分钟数据自动保留 7 天） |
 | GET | `/api/events` | SSE 实时事件（conn_open / conn_close / blocked / client_up / client_down / auth_fail / login_fail） |
 | GET | `/` | SPA（embed） |
 

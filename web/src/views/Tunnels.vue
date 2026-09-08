@@ -14,7 +14,8 @@ function peerText(t: (typeof rows.value)[number]): string {
 <template>
   <div class="mx-auto max-w-6xl">
     <div class="rounded-xl border border-[#1a2230] bg-[#0d131c] overflow-hidden">
-      <table class="w-full text-left text-[13px]">
+      <div class="overflow-x-auto">
+      <table class="w-full min-w-[640px] text-left text-[13px]">
         <thead>
           <tr class="border-b border-[#1a2230] text-[11px] uppercase tracking-wider text-slate-500">
             <th class="px-5 py-3 font-medium">名称</th>
@@ -61,6 +62,7 @@ function peerText(t: (typeof rows.value)[number]): string {
           </tr>
         </tbody>
       </table>
+      </div>
       <div v-if="!rows.length" class="px-5 py-12 text-center text-sm text-slate-600">
         暂无隧道 —— 客户端上线并注册端口后会出现在这里
       </div>

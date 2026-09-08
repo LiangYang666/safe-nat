@@ -25,7 +25,7 @@ import (
 // Rule is one stored whitelist entry.
 type Rule struct {
 	ID        int64  `json:"id"`
-	Rule      string `json:"rule"` // normalized: "1.2.3.4" or masked CIDR "10.0.0.0/8"
+	Rule      string `json:"rule"`             // normalized: "1.2.3.4" or masked CIDR "10.0.0.0/8"
 	Region    string `json:"region,omitempty"` // human region label, e.g. "中国,浙江省,杭州市 (电信)"
 	CreatedAt string `json:"created_at"`
 }
@@ -206,18 +206,30 @@ func (s *Store) Count() int {
 // Contains reports whether ip is matched by any rule. Invalid addrs (e.g.
 // from a connection we could not parse) are never allowed.
 func (s *Store) Contains(ip netip.Addr) bool {
+	_, ok := s.Match(ip)
+	return ok
+}
+
+// Match returns the stored rule (exact IP or CIDR) that covers ip, or "" if
+// none does. Invalid addrs never match.
+func (s *Store) Match(ip netip.Addr) (string, bool) {
 	if !ip.IsValid() {
-		return false
+		return "", false
 	}
 	ip = ip.Unmap()
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, p := range s.prefixes {
 		if p.Contains(ip) {
-			return true
+			// Exact IPs are stored without a prefix length; echo them back
+			// that way ("1.2.3.4", not "1.2.3.4/32").
+			if (p.Addr().Is4() && p.Bits() == 32) || (p.Addr().Is6() && p.Bits() == 128) {
+				return p.Addr().String(), true
+			}
+			return p.String(), true
 		}
 	}
-	return false
+	return "", false
 }
 
 // refresh reloads the prefix cache from the database.
