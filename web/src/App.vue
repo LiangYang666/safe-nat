@@ -50,8 +50,8 @@ onMounted(boot)
   <Login v-else-if="!store.authed" :err="store.err" @login="onLogin" />
 
   <div v-else class="flex h-full">
-    <!-- Sidebar -->
-    <aside class="flex w-56 shrink-0 flex-col border-r border-[#1a2230] bg-[#0b1017]">
+    <!-- Sidebar (desktop only; mobile uses the bottom nav) -->
+    <aside class="hidden w-56 shrink-0 flex-col border-r border-[#1a2230] bg-[#0b1017] md:flex">
       <div class="flex items-center gap-2.5 px-5 py-5">
         <div class="grid h-8 w-8 place-items-center rounded-lg bg-emerald-500/15 text-emerald-400">
           <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor">
@@ -87,30 +87,30 @@ onMounted(boot)
           ></span>
           {{ store.live ? '实时事件已连接' : '事件流已断开' }}
         </div>
-        <div class="mt-1">v0.5.0 · MIT</div>
+        <div class="mt-1">v0.8.1 · MIT</div>
       </div>
     </aside>
 
     <!-- Main -->
     <div class="flex min-w-0 flex-1 flex-col">
-      <header class="flex h-14 shrink-0 items-center gap-3 border-b border-[#1a2230] bg-[#0d131c] px-6">
-        <h1 class="text-[15px] font-medium text-slate-100">{{ current?.label }}</h1>
-        <div v-if="store.err" class="ml-4 truncate text-xs text-rose-400">{{ store.err }}</div>
-        <div class="ml-auto flex items-center gap-4">
+      <header class="flex h-14 shrink-0 items-center gap-3 border-b border-[#1a2230] bg-[#0d131c] px-4 md:px-6">
+        <h1 class="truncate text-[15px] font-medium text-slate-100">{{ current?.label }}</h1>
+        <div v-if="store.err" class="ml-4 hidden truncate text-xs text-rose-400 sm:block">{{ store.err }}</div>
+        <div class="ml-auto flex shrink-0 items-center gap-3 md:gap-4">
           <div class="hidden items-center gap-4 text-xs text-slate-500 md:flex">
             <span>在线客户端 <b class="mono text-slate-200">{{ store.stats.clients }}</b></span>
             <span>当前连接 <b class="mono text-slate-200">{{ store.stats.conn_active }}</b></span>
             <span>累计拦截 <b class="mono text-rose-400">{{ store.stats.blocked_total }}</b></span>
           </div>
-          <div class="h-4 w-px bg-[#1f2937]"></div>
-          <span class="text-xs text-slate-300">{{ store.username }}</span>
+          <div class="hidden h-4 w-px bg-[#1f2937] sm:block"></div>
+          <span class="hidden max-w-[90px] truncate text-xs text-slate-300 sm:inline">{{ store.username }}</span>
           <button
             class="rounded-lg border border-[#243044] px-2.5 py-1 text-xs text-slate-400 transition-colors hover:border-rose-500/40 hover:text-rose-400"
             @click="onLogout"
           >退出</button>
         </div>
       </header>
-      <main class="min-h-0 flex-1 overflow-y-auto p-6">
+      <main class="min-h-0 flex-1 overflow-y-auto p-4 pb-24 md:p-6">
         <Overview v-show="view === 'overview'" />
         <Tunnels v-show="view === 'tunnels'" />
         <Traffic v-show="view === 'traffic'" />
@@ -119,4 +119,21 @@ onMounted(boot)
       </main>
     </div>
   </div>
+
+  <!-- Mobile bottom nav -->
+  <nav
+    v-if="store.ready && store.authed"
+    class="fixed inset-x-0 bottom-0 z-20 grid grid-cols-5 border-t border-[#1a2230] bg-[#0b1017]/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
+  >
+    <button
+      v-for="v in views"
+      :key="v.id"
+      class="flex flex-col items-center gap-0.5 py-2 text-[10px] transition-colors"
+      :class="view === v.id ? 'text-emerald-400' : 'text-slate-500'"
+      @click="view = v.id"
+    >
+      <svg class="h-5 w-5" viewBox="0 0 24 24" fill="currentColor"><path :d="v.icon" /></svg>
+      {{ v.label }}
+    </button>
+  </nav>
 </template>

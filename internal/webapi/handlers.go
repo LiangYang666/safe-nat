@@ -73,11 +73,18 @@ func regionOf(rule string) string {
 	return ""
 }
 
-// handleWhitelistMe reports the caller's own address and its region, so the
-// UI can offer a one-click "add my current IP" (LiangNat-style).
+// handleWhitelistMe reports the caller's own address, its region and whether
+// it is already covered by a whitelist rule (exact or CIDR), so the UI can
+// show a green "already allowed" / red "not allowed, add me" card.
 func (a *WebAPI) handleWhitelistMe(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r)
-	writeJSON(w, http.StatusOK, map[string]string{"ip": ip, "region": geodb.Region(ip)})
+	rule, covered := a.srv.WhiteMatch(ip)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ip":      ip,
+		"region":  geodb.Region(ip),
+		"covered": covered,
+		"rule":    rule, // the stored rule that covers ip, "" if none
+	})
 }
 
 func (a *WebAPI) handleWhitelistDelete(w http.ResponseWriter, r *http.Request) {
@@ -124,6 +131,35 @@ func (a *WebAPI) handleTrafficDaily(w http.ResponseWriter, r *http.Request) {
 	}
 	if rows == nil {
 		rows = []traffic.DailyRow{}
+	}
+	writeJSON(w, http.StatusOK, rows)
+}
+
+// handleTrafficSeries returns a time series for the curve chart. Query:
+// days (1..7, default 1), bucket (m|h, default m — the UI asks for hour
+// buckets on 7-day views), tunnel (optional filter).
+func (a *WebAPI) handleTrafficSeries(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	days := 1
+	if v := q.Get("days"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 7 {
+			writeErr(w, http.StatusBadRequest, "days must be 1..7")
+			return
+		}
+		days = n
+	}
+	bucket := "m"
+	if v := q.Get("bucket"); v == "h" {
+		bucket = "h"
+	}
+	rows, err := a.srv.TrafficSeries(q.Get("tunnel"), days, bucket)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if rows == nil {
+		rows = []traffic.SeriesRow{}
 	}
 	writeJSON(w, http.StatusOK, rows)
 }

@@ -38,7 +38,7 @@ type Server struct {
 	hub   *Hub
 	start time.Time
 
-	trafDB   *traffic.DB     // nil unless web management is on
+	trafDB   *traffic.DB      // nil unless web management is on
 	trafLive *traffic.Tracker // in-memory totals + 1s rates
 
 	// ctlLimiter rate-limits client login attempts per source IP, so the
@@ -136,6 +136,19 @@ func (s *Server) AllowIP(ip netip.Addr) bool {
 	return s.store.Contains(ip)
 }
 
+// WhiteMatch reports whether ipStr is covered by a stored rule and, when it
+// is, which rule covers it (UI "is my IP allowed" card).
+func (s *Server) WhiteMatch(ipStr string) (string, bool) {
+	if s.store == nil {
+		return "", false
+	}
+	ip, err := netip.ParseAddr(ipStr)
+	if err != nil {
+		return "", false
+	}
+	return s.store.Match(ip)
+}
+
 // ---------- traffic accounting (see internal/traffic) ----------
 
 // RecordTraffic adds one closed connection's bytes to the tunnel's live
@@ -163,6 +176,15 @@ func (s *Server) TrafficDaily(tunnel string, days int) ([]traffic.DailyRow, erro
 		return []traffic.DailyRow{}, nil
 	}
 	return s.trafDB.Daily(tunnel, days)
+}
+
+// TrafficSeries returns a time series in the rolling window
+// [now-days*24h, now]; tunnel "" sums across every tunnel.
+func (s *Server) TrafficSeries(tunnel string, days int, bucket string) ([]traffic.SeriesRow, error) {
+	if s.trafDB == nil {
+		return []traffic.SeriesRow{}, nil
+	}
+	return s.trafDB.Series(tunnel, days, bucket)
 }
 
 // SubscribeEvents hands the caller the live event stream (web UI / SSE).

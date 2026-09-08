@@ -7,12 +7,12 @@ func TestRegion(t *testing.T) {
 		ip   string
 		want string // substring we expect in the display string
 	}{
-		{"8.8.8.8", "美国"},              // Google DNS (US, xdb labels Level3)
-		{"114.114.114.114", "南京"},        // 江苏南京
-		{"223.5.5.5", "阿里"},              // 阿里 DNS
-		{"115.199.174.92", ""},            // not asserted; must at least not panic
-		{"::1", ""},                       // IPv6 unsupported -> ""
-		{"not-an-ip", ""},                 // invalid -> ""
+		{"8.8.8.8", "美国"},         // Google DNS (US, xdb labels Level3)
+		{"114.114.114.114", "南京"}, // 江苏南京
+		{"223.5.5.5", "阿里"},       // 阿里 DNS
+		{"115.199.174.92", ""},    // not asserted; must at least not panic
+		{"::1", ""},               // IPv6 unsupported -> ""
+		{"not-an-ip", ""},         // invalid -> ""
 	}
 	for _, c := range cases {
 		got := Region(c.ip)
