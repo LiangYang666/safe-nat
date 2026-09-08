@@ -64,6 +64,9 @@ type pubConn struct {
 	c   net.Conn
 	tun *tunnel
 	ip  netip.Addr
+
+	up   atomic.Uint64 // visitor → server (bytes)
+	down atomic.Uint64 // server → visitor (bytes)
 }
 
 func newSession(s *Server, conn net.Conn) *session {
@@ -354,6 +357,7 @@ func (s *session) pumpCore(pc *pubConn, id uint32) {
 	for {
 		n, err := pc.c.Read(buf)
 		if n > 0 {
+			pc.up.Add(uint64(n))
 			if werr := s.sw.Write(protocol.TypeData, id, buf[:n]); werr != nil {
 				s.shutdown()
 				return
@@ -379,8 +383,18 @@ func (s *session) writePublic(f protocol.Frame) {
 		s.log.Debug("data for unknown conn", "conn_id", f.ConnID)
 		return
 	}
-	if _, err := pc.c.Write(f.Payload); err != nil {
+	n, err := pc.c.Write(f.Payload)
+	if err == nil {
+		pc.down.Add(uint64(n))
+	} else {
 		s.teardownConn(f.ConnID, "wan write failed: "+err.Error())
+	}
+}
+
+// recordConn books one finished connection's bytes to the tunnel counters.
+func (s *session) recordConn(pc *pubConn) {
+	if up, down := pc.up.Load(), pc.down.Load(); up > 0 || down > 0 {
+		s.srv.RecordTraffic(pc.tun.name, int64(up), int64(down))
 	}
 }
 
@@ -396,6 +410,7 @@ func (s *session) teardownConn(id uint32, reason string) {
 	if !ok {
 		return
 	}
+	s.recordConn(pc)
 	_ = pc.c.Close()
 	_ = s.sw.WriteMsg(protocol.TypeClose, id, protocol.Close{Reason: reason})
 	ev := s.evBase(EvConnClose)
@@ -413,6 +428,7 @@ func (s *session) closeConn(id uint32) bool {
 	}
 	s.mu.Unlock()
 	if ok {
+		s.recordConn(pc)
 		_ = pc.c.Close()
 	}
 	return ok
@@ -445,7 +461,9 @@ func (s *session) shutdown() {
 			_ = t.ln.Close()
 		}
 		s.mu.Lock()
-		for _, pc := range s.conns {
+		for id, pc := range s.conns {
+			delete(s.conns, id)
+			s.recordConn(pc)
 			_ = pc.c.Close()
 		}
 		s.mu.Unlock()

@@ -44,7 +44,7 @@ func TestContainsExactAndCIDR(t *testing.T) {
 	}
 	defer s.Close()
 	for _, r := range []string{"1.2.3.4", "10.0.0.0/8", "2001:db8::/32"} {
-		if _, err := s.Add(r); err != nil {
+		if _, err := s.Add(r, ""); err != nil {
 			t.Fatalf("Add(%q): %v", r, err)
 		}
 	}
@@ -73,7 +73,7 @@ func TestBoundaryMasks(t *testing.T) {
 	}
 	defer s.Close()
 	// /24: 192.168.1.255 allowed, 192.168.2.0 blocked
-	if _, err := s.Add("192.168.1.1/24"); err != nil {
+	if _, err := s.Add("192.168.1.1/24", ""); err != nil {
 		t.Fatal(err)
 	}
 	if !s.Contains(mustAddr("192.168.1.255")) {
@@ -90,11 +90,11 @@ func TestAddIdempotentAndDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	r1, err := s.Add("1.2.3.4")
+	r1, err := s.Add("1.2.3.4", "test-region")
 	if err != nil {
 		t.Fatal(err)
 	}
-	r2, err := s.Add("1.2.3.4") // duplicate
+	r2, err := s.Add("1.2.3.4", "test-region") // duplicate
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,10 +129,10 @@ func TestListOrderAndPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Add("5.6.7.8"); err != nil {
+	if _, err := s.Add("5.6.7.8", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.Add("9.9.9.0/24"); err != nil {
+	if _, err := s.Add("9.9.9.0/24", ""); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {

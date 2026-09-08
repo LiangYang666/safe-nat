@@ -72,8 +72,11 @@ func (a *WebAPI) routes() http.Handler {
 	mux.Handle("GET /api/sessions", a.requireSession(http.HandlerFunc(a.handleSessions)))
 	mux.Handle("GET /api/stats", a.requireSession(http.HandlerFunc(a.handleStats)))
 	mux.Handle("GET /api/whitelist", a.requireSession(http.HandlerFunc(a.handleWhitelistList)))
+	mux.Handle("GET /api/whitelist/me", a.requireSession(http.HandlerFunc(a.handleWhitelistMe)))
 	mux.Handle("POST /api/whitelist", a.requireSession(http.HandlerFunc(a.handleWhitelistAdd)))
 	mux.Handle("DELETE /api/whitelist/{id}", a.requireSession(http.HandlerFunc(a.handleWhitelistDelete)))
+	mux.Handle("GET /api/traffic/live", a.requireSession(http.HandlerFunc(a.handleTrafficLive)))
+	mux.Handle("GET /api/traffic/daily", a.requireSession(http.HandlerFunc(a.handleTrafficDaily)))
 	mux.Handle("GET /api/events", a.requireSession(http.HandlerFunc(a.handleEvents)))
 
 	// SPA + assets. Unknown non-API GET paths fall back to index.html so a

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { store } from '../store'
 import { api, ApiError } from '../api'
 
@@ -7,6 +7,7 @@ const ruleInput = ref('')
 const busy = ref(false)
 const msg = ref('') // transient feedback
 const msgOk = ref(false)
+const my = ref<{ ip: string; region?: string } | null>(null) // caller's own address
 
 const rules = computed(() => store.rules)
 
@@ -16,15 +17,16 @@ function flash(ok: boolean, text: string) {
   window.setTimeout(() => (msg.value = ''), 3000)
 }
 
-async function addRule() {
-  const rule = ruleInput.value.trim()
-  if (!rule || busy.value) return
+async function addRule(rule?: string) {
+  const target = (rule ?? ruleInput.value).trim()
+  if (!target || busy.value) return
   busy.value = true
   try {
-    const created = await api.whitelistAdd(rule)
+    const created = await api.whitelistAdd(target)
     ruleInput.value = ''
+    if (my.value && created.rule === my.value.ip) my.value = null // self already added
     await refresh()
-    flash(true, `已加入 ${created.rule}`)
+    flash(true, `已加入 ${created.rule}${created.region ? ' · ' + created.region : ''}`)
   } catch (e) {
     flash(false, e instanceof ApiError ? e.message : '添加失败')
   } finally {
@@ -42,6 +44,17 @@ async function removeRule(id: number, rule: string) {
   }
 }
 
+async function detectMe() {
+  if (busy.value) return
+  try {
+    const info = await api.whitelistMe()
+    my.value = info
+    if (info.region) flash(true, `识别到 ${info.ip} · ${info.region}`)
+  } catch (e) {
+    flash(false, e instanceof ApiError ? e.message : '识别失败')
+  }
+}
+
 async function refresh() {
   try {
     store.rules = await api.whitelist()
@@ -49,6 +62,8 @@ async function refresh() {
     /* polling will retry */
   }
 }
+
+onMounted(detectMe)
 
 const hint = '精确 IP（1.2.3.4）或 CIDR（10.0.0.0/8），IPv4 / IPv6 均可'
 </script>
@@ -59,7 +74,27 @@ const hint = '精确 IP（1.2.3.4）或 CIDR（10.0.0.0/8），IPv4 / IPv6 均�
     <div class="rounded-xl border border-[#1a2230] bg-[#0d131c] p-5">
       <div class="text-[13px] font-medium text-slate-200">添加白名单规则</div>
       <div class="mt-1 text-[11px] text-slate-600">{{ hint }}</div>
-      <form class="mt-3 flex gap-2" @submit.prevent="addRule">
+
+      <!-- detect-me card (LiangNat-style one-click self add) -->
+      <div
+        v-if="my"
+        class="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3.5 py-2.5"
+      >
+        <div class="min-w-0 text-[12px] text-slate-300">
+          <span class="text-slate-500">当前访问者：</span>
+          <span class="mono font-medium text-emerald-300">{{ my.ip }}</span>
+          <span v-if="my.region" class="ml-2 text-slate-500">{{ my.region }}</span>
+        </div>
+        <button
+          type="button"
+          :disabled="busy"
+          class="ml-auto rounded-md border border-emerald-500/40 px-3 py-1 text-[12px] font-medium text-emerald-300 transition-colors hover:bg-emerald-500/10 disabled:opacity-40"
+          title="把当前访问 IP 加入白名单（如从手机流量访问本面板，加入的即手机 IP）"
+          @click="addRule(my.ip)"
+        >加入白名单</button>
+      </div>
+
+      <form class="mt-3 flex gap-2" @submit.prevent="addRule()">
         <input
           v-model="ruleInput"
           placeholder="例如 1.2.3.4 或 10.0.0.0/8"
@@ -85,6 +120,7 @@ const hint = '精确 IP（1.2.3.4）或 CIDR（10.0.0.0/8），IPv4 / IPv6 均�
           <tr v-for="r in rules" :key="r.id" class="transition-colors hover:bg-[#111827]/60">
             <td class="mono w-14 px-5 py-3 text-slate-600">#{{ r.id }}</td>
             <td class="mono px-3 py-3 text-slate-200">{{ r.rule }}</td>
+            <td class="px-3 py-3 text-[12px] text-slate-500">{{ r.region || '—' }}</td>
             <td class="px-3 py-3 text-right">
               <span class="text-[11px] text-slate-600">{{ r.created_at.slice(11, 19) }}</span>
             </td>
@@ -105,7 +141,8 @@ const hint = '精确 IP（1.2.3.4）或 CIDR（10.0.0.0/8），IPv4 / IPv6 均�
 
     <p class="px-1 text-[11px] leading-relaxed text-slate-600">
       防火墙规则全局生效：任何开启了 <span class="text-slate-400">firewall</span> 的隧道（含 SOCKS5 代理）在 accept 时校验来源 IP。
-      <span class="text-slate-500">为安全起见，删除规则前请确认你的当前 IP（可通过登录页来源地址核对）仍在白名单内。</span>
+      添加时自动标注 IP 归属地（本地 ip2region 库，离线查询）。
+      <span class="text-slate-500">手机流量访问本面板时，顶部会识别出你的公网 IP，点「加入白名单」即可放行自己。</span>
     </p>
   </div>
 </template>
