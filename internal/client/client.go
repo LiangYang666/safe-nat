@@ -201,6 +201,20 @@ func (c *Client) runOnce(ctx context.Context) error {
 	defer conn.Close()
 	c.log.Info("connected to server", "server", addr, "tls", c.tlsCfg != nil)
 
+	// Watch ctx: on SIGINT/SIGTERM close the control conn so the blocking
+	// frame read below unblocks immediately. Without this, server heartbeats
+	// keep refreshing the read deadline and systemd's stop would have to
+	// SIGKILL us after its 90s timeout.
+	ctxWatch := make(chan struct{})
+	defer close(ctxWatch)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-ctxWatch:
+		}
+	}()
+
 	sw := protocol.NewConnWriter(conn)
 	br := bufio.NewReaderSize(conn, dataBufSize)
 

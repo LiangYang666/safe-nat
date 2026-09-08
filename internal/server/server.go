@@ -24,6 +24,7 @@ import (
 	"github.com/LiangYang666/safe-nat/internal/config"
 	"github.com/LiangYang666/safe-nat/internal/throttle"
 	"github.com/LiangYang666/safe-nat/internal/tlsx"
+	"github.com/LiangYang666/safe-nat/internal/traffic"
 	"github.com/LiangYang666/safe-nat/internal/whitelist"
 )
 
@@ -36,6 +37,9 @@ type Server struct {
 	store *whitelist.Store // non-nil iff cfg.Web != nil
 	hub   *Hub
 	start time.Time
+
+	trafDB   *traffic.DB     // nil unless web management is on
+	trafLive *traffic.Tracker // in-memory totals + 1s rates
 
 	// ctlLimiter rate-limits client login attempts per source IP, so the
 	// public control port survives token brute force.
@@ -95,14 +99,25 @@ func New(cfg *config.ServerConfig, log *slog.Logger) (*Server, error) {
 		}
 		s.store = store
 		log.Info("whitelist store opened", "db", cfg.Web.DBPath)
+		trafDB, err := traffic.Open(cfg.Web.DBPath)
+		if err != nil {
+			_ = store.Close()
+			return nil, err
+		}
+		s.trafDB = trafDB
+		s.trafLive = traffic.NewTracker()
+		log.Info("traffic store opened", "db", cfg.Web.DBPath)
 	}
 	return s, nil
 }
 
-// Close releases the whitelist database.
+// Close releases the whitelist and traffic databases.
 func (s *Server) Close() {
 	if s.store != nil {
 		_ = s.store.Close()
+	}
+	if s.trafDB != nil {
+		_ = s.trafDB.Close()
 	}
 }
 
@@ -119,6 +134,35 @@ func (s *Server) AllowIP(ip netip.Addr) bool {
 		return true
 	}
 	return s.store.Contains(ip)
+}
+
+// ---------- traffic accounting (see internal/traffic) ----------
+
+// RecordTraffic adds one closed connection's bytes to the tunnel's live
+// totals and its calendar-day total. No-op when web management is off.
+func (s *Server) RecordTraffic(tunnel string, up, down int64) {
+	if s.trafDB == nil || s.trafLive == nil {
+		return
+	}
+	s.trafLive.Add(tunnel, up, down)
+	s.trafDB.Record(tunnel, traffic.Day(time.Now()), up, down)
+}
+
+// TrafficLive returns real-time per-tunnel rates and lifetime totals.
+func (s *Server) TrafficLive() []traffic.LiveView {
+	if s.trafLive == nil {
+		return []traffic.LiveView{}
+	}
+	return s.trafLive.Live()
+}
+
+// TrafficDaily returns per-day per-tunnel totals for the last n days.
+// tunnel "" means every tunnel.
+func (s *Server) TrafficDaily(tunnel string, days int) ([]traffic.DailyRow, error) {
+	if s.trafDB == nil {
+		return []traffic.DailyRow{}, nil
+	}
+	return s.trafDB.Daily(tunnel, days)
 }
 
 // SubscribeEvents hands the caller the live event stream (web UI / SSE).
@@ -169,6 +213,22 @@ func (s *Server) Run(ctx context.Context) error {
 		ln = tls.NewListener(ln, s.tlsCfg)
 	}
 	s.log.Info("server listening", "addr", ln.Addr().String(), "web", s.cfg.Web != nil, "tls", s.tlsCfg != nil)
+
+	// 1 Hz live-rate sampler for the traffic view.
+	if s.trafLive != nil {
+		go func() {
+			tick := time.NewTicker(time.Second)
+			defer tick.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-tick.C:
+					s.trafLive.Sample()
+				}
+			}
+		}()
+	}
 
 	var sessions sync.WaitGroup
 	go func() {

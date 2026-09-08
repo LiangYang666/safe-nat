@@ -26,6 +26,7 @@ import (
 type Rule struct {
 	ID        int64  `json:"id"`
 	Rule      string `json:"rule"` // normalized: "1.2.3.4" or masked CIDR "10.0.0.0/8"
+	Region    string `json:"region,omitempty"` // human region label, e.g. "中国,浙江省,杭州市 (电信)"
 	CreatedAt string `json:"created_at"`
 }
 
@@ -69,10 +70,21 @@ func (s *Store) init() error {
 	_, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS rules (
 		id         INTEGER PRIMARY KEY AUTOINCREMENT,
 		rule       TEXT NOT NULL UNIQUE,
+		region     TEXT NOT NULL DEFAULT '',
 		created_at TEXT NOT NULL
 	)`)
 	if err != nil {
 		return fmt.Errorf("whitelist: migrate: %w", err)
+	}
+	// Migration for databases created before the region column existed.
+	var hasRegion int
+	if err := s.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('rules') WHERE name = 'region'`).Scan(&hasRegion); err != nil {
+		return fmt.Errorf("whitelist: check region column: %w", err)
+	}
+	if hasRegion == 0 {
+		if _, err := s.db.Exec(`ALTER TABLE rules ADD COLUMN region TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("whitelist: add region column: %w", err)
+		}
 	}
 	return nil
 }
@@ -122,23 +134,24 @@ func toPrefix(rule string) (netip.Prefix, error) {
 }
 
 // Add inserts a rule (idempotent: re-adding an existing rule returns the
-// existing entry) and refreshes the cache.
-func (s *Store) Add(rule string) (Rule, error) {
+// existing entry) and refreshes the cache. region is a human display label
+// for the rule's IP (empty for CIDR rules); re-adding does not overwrite it.
+func (s *Store) Add(rule, region string) (Rule, error) {
 	norm, err := ParseRule(rule)
 	if err != nil {
 		return Rule{}, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
 	res, err := s.db.Exec(
-		`INSERT INTO rules (rule, created_at) VALUES (?, ?)
-		 ON CONFLICT(rule) DO NOTHING`, norm, now)
+		`INSERT INTO rules (rule, region, created_at) VALUES (?, ?, ?)
+		 ON CONFLICT(rule) DO NOTHING`, norm, region, now)
 	if err != nil {
 		return Rule{}, fmt.Errorf("whitelist: insert: %w", err)
 	}
 	var id int64
 	if n, _ := res.RowsAffected(); n == 0 {
-		if err := s.db.QueryRow(`SELECT id, created_at FROM rules WHERE rule = ?`, norm).
-			Scan(&id, &now); err != nil {
+		if err := s.db.QueryRow(`SELECT id, region, created_at FROM rules WHERE rule = ?`, norm).
+			Scan(&id, &region, &now); err != nil {
 			return Rule{}, fmt.Errorf("whitelist: lookup after insert: %w", err)
 		}
 	} else {
@@ -147,7 +160,7 @@ func (s *Store) Add(rule string) (Rule, error) {
 	if err := s.refresh(); err != nil {
 		return Rule{}, err
 	}
-	return Rule{ID: id, Rule: norm, CreatedAt: now}, nil
+	return Rule{ID: id, Rule: norm, Region: region, CreatedAt: now}, nil
 }
 
 // Delete removes rule id. It reports whether a row was removed.
@@ -167,7 +180,7 @@ func (s *Store) Delete(id int64) (bool, error) {
 
 // List returns all rules ordered by id.
 func (s *Store) List() ([]Rule, error) {
-	rows, err := s.db.Query(`SELECT id, rule, created_at FROM rules ORDER BY id`)
+	rows, err := s.db.Query(`SELECT id, rule, region, created_at FROM rules ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("whitelist: list: %w", err)
 	}
@@ -175,7 +188,7 @@ func (s *Store) List() ([]Rule, error) {
 	var out []Rule
 	for rows.Next() {
 		var r Rule
-		if err := rows.Scan(&r.ID, &r.Rule, &r.CreatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Rule, &r.Region, &r.CreatedAt); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/LiangYang666/safe-nat/internal/geodb"
+	"github.com/LiangYang666/safe-nat/internal/traffic"
 	"github.com/LiangYang666/safe-nat/internal/whitelist"
 )
 
@@ -50,13 +53,31 @@ func (a *WebAPI) handleWhitelistAdd(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "bad JSON body")
 		return
 	}
-	rule, err := a.store().Add(req.Rule)
+	rule, err := a.store().Add(req.Rule, regionOf(req.Rule))
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	a.log.Info("whitelist rule added", "rule", rule.Rule, "by", clientIP(r))
+	a.log.Info("whitelist rule added", "rule", rule.Rule, "region", rule.Region, "by", clientIP(r))
 	writeJSON(w, http.StatusOK, rule)
+}
+
+// regionOf resolves a rule string to a human region label. Only exact IPv4
+// rules carry a region; CIDR blocks and unresolvable addresses get "".
+func regionOf(rule string) string {
+	if !strings.Contains(rule, "/") {
+		if r := geodb.Region(rule); r != "" {
+			return r
+		}
+	}
+	return ""
+}
+
+// handleWhitelistMe reports the caller's own address and its region, so the
+// UI can offer a one-click "add my current IP" (LiangNat-style).
+func (a *WebAPI) handleWhitelistMe(w http.ResponseWriter, r *http.Request) {
+	ip := clientIP(r)
+	writeJSON(w, http.StatusOK, map[string]string{"ip": ip, "region": geodb.Region(ip)})
 }
 
 func (a *WebAPI) handleWhitelistDelete(w http.ResponseWriter, r *http.Request) {
@@ -76,6 +97,35 @@ func (a *WebAPI) handleWhitelistDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	a.log.Info("whitelist rule deleted", "id", id, "by", clientIP(r))
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleTrafficLive streams the real-time per-tunnel rates + totals.
+func (a *WebAPI) handleTrafficLive(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, a.srv.TrafficLive())
+}
+
+// handleTrafficDaily lists per-day per-tunnel totals. Query params:
+// days (default 7), tunnel (optional filter).
+func (a *WebAPI) handleTrafficDaily(w http.ResponseWriter, r *http.Request) {
+	days := 7
+	if v := r.URL.Query().Get("days"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 90 {
+			writeErr(w, http.StatusBadRequest, "days must be 1..90")
+			return
+		}
+		days = n
+	}
+	tunnel := r.URL.Query().Get("tunnel")
+	rows, err := a.srv.TrafficDaily(tunnel, days)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if rows == nil {
+		rows = []traffic.DailyRow{}
+	}
+	writeJSON(w, http.StatusOK, rows)
 }
 
 // ---------- SSE event stream ----------

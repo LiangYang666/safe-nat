@@ -33,7 +33,28 @@ export interface SessionView {
 export interface WhitelistRule {
   id: number
   rule: string
+  region?: string
   created_at: string
+}
+
+export interface MyIpInfo {
+  ip: string
+  region?: string
+}
+
+export interface TrafficLive {
+  tunnel: string
+  up_bps: number
+  down_bps: number
+  up_total: number
+  down_total: number
+}
+
+export interface TrafficDaily {
+  tunnel: string
+  day: string
+  up_bytes: number
+  down_bytes: number
 }
 
 export interface ServerEvent {
@@ -91,6 +112,12 @@ export const api = {
   tunnels: () => request<TunnelView[]>('/api/tunnels'),
   sessions: () => request<SessionView[]>('/api/sessions'),
   whitelist: () => request<WhitelistRule[]>('/api/whitelist'),
+  whitelistMe: () => request<MyIpInfo>('/api/whitelist/me'),
+  trafficLive: () => request<TrafficLive[]>('/api/traffic/live'),
+  trafficDaily: (days = 7, tunnel = '') =>
+    request<TrafficDaily[]>(
+      `/api/traffic/daily?days=${days}${tunnel ? `&tunnel=${encodeURIComponent(tunnel)}` : ''}`,
+    ),
   whitelistAdd: (rule: string) =>
     request<WhitelistRule>('/api/whitelist', {
       method: 'POST',
