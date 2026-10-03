@@ -12,6 +12,7 @@ const (
 	EvConnOpen   = "conn_open"   // a public connection passed the firewall and was opened
 	EvConnClose  = "conn_close"  // a public connection ended
 	EvBlocked    = "blocked"     // a connection was denied by the whitelist firewall
+	EvTLSFail    = "tls_fail"    // TLS handshake failed on a public_tls port (wrong protocol / scan noise)
 	EvAuthFail   = "auth_fail"   // control-port login rejected (bad token / rate-limited)
 	EvLoginFail  = "login_fail"  // web login rejected or rate-limited
 )

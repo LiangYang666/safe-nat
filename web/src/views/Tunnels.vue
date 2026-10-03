@@ -22,6 +22,7 @@ function peerText(t: (typeof rows.value)[number]): string {
             <th class="px-3 py-3 font-medium">类型</th>
             <th class="px-3 py-3 font-medium">公网端口</th>
             <th class="px-3 py-3 font-medium">防火墙</th>
+            <th class="px-3 py-3 font-medium">加密</th>
             <th class="px-3 py-3 font-medium">归属客户端</th>
             <th class="px-3 py-3 font-medium">当前/累计连接</th>
             <th class="px-3 py-3 font-medium text-right">拦截</th>
@@ -50,6 +51,16 @@ function peerText(t: (typeof rows.value)[number]): string {
                 <span class="inline-block h-1.5 w-1.5 rounded-full" :class="t.firewall ? 'bg-emerald-400' : 'bg-amber-400'"></span>
                 {{ t.firewall ? '白名单保护' : '开放' }}
               </span>
+            </td>
+            <td class="px-3 py-3">
+              <span
+                v-if="t.tls"
+                class="inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[11px] border-teal-500/25 bg-teal-500/10 text-teal-300"
+              >
+                <span class="inline-block h-1.5 w-1.5 rounded-full bg-teal-400"></span>
+                TLS
+              </span>
+              <span v-else class="text-[11px] text-slate-600">明文</span>
             </td>
             <td class="px-3 py-3 text-slate-400">{{ t.client }}</td>
             <td class="mono px-3 py-3">

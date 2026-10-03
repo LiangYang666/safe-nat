@@ -16,6 +16,7 @@ export interface TunnelView {
   type: string // tcp | socks5
   remote_port: number
   firewall: boolean
+  tls: boolean
   client: string
   conn_active: number
   conn_total: number

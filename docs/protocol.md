@@ -76,3 +76,13 @@ header := type(1B) | connID(4B BE) | length(4B BE)      // 9 字节定长
 - 生效条件：server.yaml 配了 `web:` 段（白名单库存在），且该隧道 `firewall: true`。
 - 判定时机：公网 **accept 时**按来源 IP 查白名单（精确 IP 或 CIDR，IPv4/IPv6）。拒绝 → 立即 close + 计数 + `blocked` 事件；放行 → Open。
 - 已建立的连接不受白名单变更影响；隧道 `firewall` 标志来自 client.yaml，改后需重连客户端生效。
+
+## 公网 TLS（v0.9 public_tls，不改本协议）
+
+- server.yaml `public_tls.ports` 列出的 remote_port，在 **白名单放行之后、Open 之前**做
+  TLS 服务端握手（`tls.Server` + 10s 握手超时），握手失败 → close + `tls_fail` 事件 +
+  计入该隧道 blocked。
+- 握手成功后本协议帧格式完全不变：server 与 client 之间、client 与内层服务之间都仍是
+  原始字节流（内层是「TLS 解密后的明文」转发）。即加密只覆盖「访客 → 公网端口」这一跳，
+  内层 HTTP 服务无需任何改动。
+- `socks5` 隧道永不包裹（其握手由 server 解析，客户端不认 TLS）；未列出的端口保持明文。

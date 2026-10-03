@@ -34,6 +34,7 @@ safenat version    # 确认装好
 - ✅ **IP 归属地标注（v0.8）**：白名单规则自动标注 ip2region 地域（离线库 embed）；面板自动识别当前访问者 IP，一键把自己加进白名单
 - ✅ 心跳保活 + 断线指数退避重连（±20% 抖动防重连风暴）
 - ✅ **自动传输加密（v0.7）**：server↔client 默认 TLS（自签 + 指纹校验，SSH known_hosts 式），零配置
+- ✅ **公网 TLS 终结（v0.9）**：`public_tls.ports` 列出的隧道端口由服务端终结访客 TLS——浏览器用 `https://` 访问公网端口，内层服务保持 HTTP 不用改一行代码；按端口 opt-in，VNC/SOCKS5 这类不认 TLS 的客户端不受影响
 - ✅ 单二进制部署（前端 embed + 纯 Go sqlite，免 cgo，可交叉编译上路由器 / NAS）
 - ✅ **防爆破**：Web 登录与控制口接入按 IP 递增锁定（5 错 → 1m/5m/15m），失败尝试实时上安全日志
 - ✅ 本地运维：`safenat init`（配置生成到用户目录）· `safenat status`（已监听端口/会话/统计）· `safenat logs`
@@ -93,6 +94,11 @@ web:                       # 存在即启用管理面板 + 白名单防火墙
   username: admin
   password: "change-me"    # 务必修改
   # db_path: <配置目录>/data/safenat.db   # 白名单库（默认，自动创建）
+
+# public_tls:              # v0.9：给选定的隧道公网端口终结访客 TLS
+#   ports: [48080]         # 只有列出的 remote_port 走 https；内层服务保持 HTTP 无需改
+#   # cert: /  key:         # 默认 data/public-tls.crt/.key（首次启动自签）；
+#   #                        指向你自己的域名证书可消除浏览器告警
 ```
 
 浏览器打开 `http://<server>:10086` 登录。**先把你自己当前的公网 IP 加进白名单**（否则后面所有受保护端口都会拒绝你）。
@@ -151,6 +157,7 @@ curl --socks5-hostname <server>:7999 http://intranet.example/   # SOCKS5 代理
 | server | `token` | 客户端接入凭证 | `123456`（有警告） |
 | server | `tls` / `tls_cert` / `tls_key` | 自动加密开关；证书路径（自动生成） | true / <配置目录>/data/safenat-server.crt·key |
 | server.web | `bind_port` / `username` / `password` / `db_path` | 管理面板；**配置了 web 段才启用防火墙** | 10086 / admin / 123456 / <配置目录>/data/safenat.db |
+| server.public_tls | `cert` / `key` / `ports` | v0.9：访客侧 TLS 终结；`ports` 列出的 remote_port 走 https，其余端口不受影响 | <配置目录>/data/public-tls.crt·key / 无（不启用） |
 | client | `name` | Web 面板显示名 | 来源 IP |
 | client | `server_addr` / `server_port` / `token` | 服务端地址与凭证 | - |
 | client | `tls` / `tls_fingerprints` | 加密开关；服务器指纹存储 | true / <配置目录>/data/known_servers.txt |

@@ -25,7 +25,7 @@ import (
 	"github.com/LiangYang666/safe-nat/internal/webapi"
 )
 
-const version = "0.7.0" // auto TLS (TOFU) + hardening + ops polish
+const version = "0.9.0" // public_tls: server-side TLS termination on opted-in tunnel ports
 
 const usageText = `safenat - secure NAT penetration (Go)
 
@@ -315,6 +315,18 @@ web:
   bind_port: 10086
   username: admin
   password: "change-me-too"
+
+# Optional (v0.9): terminate TLS on the PUBLIC side of selected tunnels, so
+# visitors' browsers reach a plain-HTTP inner service over https:// — the app
+# itself needs no TLS support. Only the listed remote ports are wrapped;
+# keep VNC/SOCKS5-style ports out of the list (their clients don't speak TLS
+# and would break). Cert defaults to data/public-tls.crt/.key (self-signed
+# on first start); point cert/key at your own trusted domain certificate to
+# avoid browser warnings.
+# public_tls:
+#   # cert: /path/to/your-domain.crt
+#   # key:  /path/to/your-domain.key
+#   ports: [40080, 48080]
 `
 
 const clientInitConfig = `# safe-nat client config (LAN side). Written by "safenat init".

@@ -7,6 +7,7 @@ const keep = ref(0) // scroll anchor when paused
 
 const kinds: Record<string, { label: string; dot: string }> = {
   blocked: { label: 'blocked', dot: 'bg-rose-500' },
+  tls_fail: { label: 'tls_fail', dot: 'bg-rose-400' },
   conn_open: { label: 'conn_open', dot: 'bg-emerald-500' },
   conn_close: { label: 'conn_close', dot: 'bg-slate-600' },
   client_up: { label: 'client_up', dot: 'bg-sky-500' },
