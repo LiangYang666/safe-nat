@@ -3,6 +3,7 @@ package server
 import (
 	"bufio"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/LiangYang666/safe-nat/internal/protocol"
+	"github.com/LiangYang666/safe-nat/internal/tlsx"
 )
 
 const (
@@ -54,6 +56,7 @@ type tunnel struct {
 	typ        string // "tcp" | "socks5"
 	remotePort uint16
 	firewall   bool
+	tls        bool // public_tls wraps this port (fixed at bind time)
 	ln         net.Listener
 	opened     atomic.Uint64 // lifetime public conns accepted
 	blocked    atomic.Uint64 // lifetime firewall denials on this port
@@ -205,7 +208,11 @@ func (s *session) login(br *bufio.Reader) error {
 		if typ == "" {
 			typ = "tcp"
 		}
-		tun := &tunnel{name: t.Name, typ: typ, remotePort: t.RemotePort, firewall: t.Firewall, ln: ln}
+		// Snapshot the public_tls decision at bind time (socks5 handshakes
+		// are parsed by the server itself, so TLS would break them).
+		_, wantsTLS := s.srv.publicTLSFor(t.RemotePort)
+		tun := &tunnel{name: t.Name, typ: typ, remotePort: t.RemotePort, firewall: t.Firewall,
+			tls: wantsTLS && typ != "socks5", ln: ln}
 		s.tunnels = append(s.tunnels, tun)
 		s.wg.Add(1)
 		go s.acceptLoop(tun)
@@ -278,6 +285,30 @@ func (s *session) acceptLoop(t *tunnel) {
 			s.wg.Add(1)
 			go func() { defer s.wg.Done(); s.serveSocks5(c, t) }()
 			continue
+		}
+		// Public TLS (v0.9): terminate visitor TLS on opted-in ports, so a
+		// plain-HTTP inner service is reachable over https with no app-side
+		// change. Order matters — the whitelist check above runs on the raw
+		// TCP peer first, so out-of-whitelist IPs cannot burn CPU on TLS
+		// handshakes. SOCKS5 tunnels are never wrapped: their clients do not
+		// speak TLS.
+		if tcfg, ok := s.srv.publicTLSFor(t.remotePort); ok && t.tls {
+			tc := tls.Server(c, tcfg)
+			_ = tc.SetDeadline(time.Now().Add(tlsx.HandshakeTimeout))
+			if hsErr := tc.Handshake(); hsErr != nil {
+				_ = tc.SetDeadline(time.Time{})
+				_ = c.Close()
+				t.blocked.Add(1)
+				s.srv.blockedTotal.Add(1)
+				ev := s.evBase(EvTLSFail)
+				ev.Tunnel, ev.TypeTunnel, ev.RemotePort, ev.IP = t.name, t.typ, t.remotePort, ip.String()
+				ev.Reason = hsErr.Error()
+				s.srv.hub.Publish(ev)
+				s.log.Info("tls handshake failed", "ip", ip.String(), "port", t.remotePort, "err", hsErr)
+				continue
+			}
+			_ = tc.SetDeadline(time.Time{})
+			c = tc
 		}
 		id, pc := s.openPubConn(t, c, ip)
 		s.log.Info("tunnel conn open", "conn_id", id, "ip", ip.String(), "port", t.remotePort)
@@ -470,6 +501,18 @@ func (s *session) shutdown() {
 	})
 }
 
+// publicTLS returns (cfg, ok) when this remote port must terminate visitor
+// TLS server-side (v0.9 public_tls feature).
+func (s *Server) publicTLSFor(port uint16) (*tls.Config, bool) {
+	if s.pubTLS == nil {
+		return nil, false
+	}
+	_, ok := s.pubTLSPort[port]
+	return s.pubTLS, ok
+}
+
+// peerIP extracts the numeric peer address for whitelist matching. TLS
+// connections report the underlying TCP address, so it works unchanged.
 func peerIP(addr net.Addr) netip.Addr {
 	ap, err := netip.ParseAddrPort(addr.String())
 	if err != nil {

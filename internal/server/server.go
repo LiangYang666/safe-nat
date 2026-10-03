@@ -48,6 +48,12 @@ type Server struct {
 	// tlsCfg non-nil means the control listener speaks TLS (v0.7 default).
 	tlsCfg *tls.Config
 
+	// pubTLS non-nil means selected public tunnel ports (public_tls.ports)
+	// terminate visitor TLS server-side (v0.9): the browser speaks https to
+	// the remote port, the inner service stays plain HTTP.
+	pubTLS     *tls.Config
+	pubTLSPort map[uint16]bool
+
 	mu       sync.Mutex
 	sessions map[*session]struct{}
 
@@ -90,6 +96,19 @@ func New(cfg *config.ServerConfig, log *slog.Logger) (*Server, error) {
 		leaf, perr := x509.ParseCertificate(cert.Certificate[0])
 		if perr == nil {
 			log.Info("tls enabled", "fingerprint", tlsx.Fingerprint(leaf))
+		}
+	}
+	if pt := cfg.PublicTLS; pt != nil {
+		cert, err := tlsx.EnsureServerCert(pt.Cert, pt.Key)
+		if err != nil {
+			return nil, fmt.Errorf("public_tls: %w", err)
+		}
+		s.pubTLS = tlsx.ServerConfig(cert)
+		s.pubTLSPort = pt.PortSet()
+		leaf, perr := x509.ParseCertificate(cert.Certificate[0])
+		if perr == nil {
+			log.Info("public tls enabled", "ports", pt.Ports, "cert", pt.Cert,
+				"fingerprint", tlsx.Fingerprint(leaf))
 		}
 	}
 	if cfg.Web != nil {
@@ -303,6 +322,7 @@ type TunnelView struct {
 	Type       string `json:"type"`
 	RemotePort uint16 `json:"remote_port"`
 	Firewall   bool   `json:"firewall"`
+	TLS        bool   `json:"tls"` // public_tls terminates visitor TLS on this port (v0.9)
 	Client     string `json:"client"`
 	ConnActive int    `json:"conn_active"`
 	ConnTotal  uint64 `json:"conn_total"`
@@ -365,6 +385,7 @@ func (s *Server) Tunnels() []TunnelView {
 				Type:       t.typ,
 				RemotePort: t.remotePort,
 				Firewall:   t.firewall,
+				TLS:        t.tls,
 				Client:     sess.label(),
 				ConnActive: active,
 				ConnTotal:  t.opened.Load(),

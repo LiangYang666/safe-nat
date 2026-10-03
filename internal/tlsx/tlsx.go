@@ -107,6 +107,12 @@ func ServerConfig(cert tls.Certificate) *tls.Config {
 	}
 }
 
+// HandshakeTimeout bounds the TLS handshake on a public listener. Without
+// it a slow-loris (open socket, dribble ClientHello bytes) would pin a
+// goroutine and the connection forever: http.Server only timeouts cover the
+// request phase, never the handshake.
+const HandshakeTimeout = 10 * time.Second
+
 // knownHosts is the client's trusted-server fingerprint store (SSH
 // known_hosts analogue): one "host fingerprint-hex" line per trusted server.
 type knownHosts struct {

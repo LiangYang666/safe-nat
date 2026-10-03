@@ -24,11 +24,43 @@ type ServerConfig struct {
 	// TLS (auto transport encryption, v0.7). Enabled by default: the server
 	// generates a self-signed keypair on first start (tls_cert/tls_key,
 	// default <config dir>/data/safenat-server.crt|.key — data stays out of
-	// the config directory) and the client pins its fingerprint. Set
-	// tls: false to disable.
+	// the config directory) and the client pins its fingerprint. Set tls:
+	// false to disable.
 	TLS     *bool  `yaml:"tls"`
 	TLSCert string `yaml:"tls_cert"`
 	TLSKey  string `yaml:"tls_key"`
+
+	// PublicTLS (v0.9): terminate TLS on the *public* side of selected
+	// tunnels, so visitors' browsers speak https to the remote port while
+	// the inner service can stay plain HTTP (no app-side changes needed).
+	// Only the listed remote ports are wrapped — non-browser clients
+	// (VNC, SOCKS5 without TLS support) must keep a plain port.
+	PublicTLS *PublicTLSConfig `yaml:"public_tls"`
+}
+
+// PublicTLSConfig configures server-side TLS termination for public tunnel
+// ports (the visitor-facing leg, not the server↔client leg).
+type PublicTLSConfig struct {
+	// Cert/Key: PEM keypair presented on the listed ports. Defaults to
+	// <config dir>/data/public-tls.crt|.key, auto-generated self-signed
+	// (CN=safe-nat) on first start — point these at your own domain cert
+	// (e.g. the one devices already trust) to avoid browser warnings.
+	Cert string `yaml:"cert"`
+	Key  string `yaml:"key"`
+	// Ports: remote_port numbers to wrap. Empty = configured but inert
+	// (a startup warning; nothing is TLS-terminated).
+	Ports []int `yaml:"ports"`
+}
+
+// PortSet normalises Ports to uint16 lookups.
+func (p *PublicTLSConfig) PortSet() map[uint16]bool {
+	set := make(map[uint16]bool, len(p.Ports))
+	for _, n := range p.Ports {
+		if n > 0 && n <= 65535 {
+			set[uint16(n)] = true
+		}
+	}
+	return set
 }
 
 // WebConfig enables the built-in management UI / whitelist firewall.
@@ -158,6 +190,23 @@ func LoadServer(path string) (*ServerConfig, []string, error) {
 		}
 		if cfg.TLSKey == "" {
 			cfg.TLSKey = filepath.Join(dir, "safenat-server.key")
+		}
+	}
+	if pt := cfg.PublicTLS; pt != nil {
+		dir := dataDir(path)
+		if pt.Cert == "" {
+			pt.Cert = filepath.Join(dir, "public-tls.crt")
+		}
+		if pt.Key == "" {
+			pt.Key = filepath.Join(dir, "public-tls.key")
+		}
+		if len(pt.Ports) == 0 {
+			warns = append(warns, "public_tls configured but ports is empty — nothing will be TLS-terminated")
+		}
+		for _, n := range pt.Ports {
+			if err := checkPort("public_tls.ports", n); err != nil {
+				return nil, warns, err
+			}
 		}
 	}
 	return &cfg, warns, nil
