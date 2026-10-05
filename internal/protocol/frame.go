@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 )
 
 // HeaderSize is the fixed frame header size in bytes.
@@ -82,20 +83,35 @@ func ReadFrame(r io.Reader) (Frame, error) {
 	return f, nil
 }
 
+// DefaultWriteTimeout bounds every frame write on a control connection. Without
+// it a peer that stops reading pins this writer's mutex forever, which stalls
+// every stream sharing the connection — in the 2026-10-05 outage the client's
+// LAN pump held that mutex behind one blocked write and the whole session went
+// silently dead (control frames kept flowing, not a byte of data did).
+const DefaultWriteTimeout = 45 * time.Second
+
 // ConnWriter serializes writes to one control connection. Tunneled-data
 // pumps and control goroutines share it, so every write takes a mutex; each
 // frame is flushed before returning. After the first error the connection is
 // closed and all later writes fail fast.
 type ConnWriter struct {
-	mu   sync.Mutex
-	w    *bufio.Writer
-	conn net.Conn
-	err  error
+	mu      sync.Mutex
+	w       *bufio.Writer
+	conn    net.Conn
+	err     error
+	timeout time.Duration // per-frame write deadline; 0 disables it
 }
 
 // NewConnWriter wraps conn with a buffered, mutex-guarded frame writer.
 func NewConnWriter(conn net.Conn) *ConnWriter {
-	return &ConnWriter{w: bufio.NewWriterSize(conn, 32<<10), conn: conn}
+	return &ConnWriter{w: bufio.NewWriterSize(conn, 32<<10), conn: conn, timeout: DefaultWriteTimeout}
+}
+
+// SetWriteTimeout overrides the per-frame deadline (0 disables it).
+func (cw *ConnWriter) SetWriteTimeout(d time.Duration) {
+	cw.mu.Lock()
+	cw.timeout = d
+	cw.mu.Unlock()
 }
 
 // Write sends one frame (header + payload).
@@ -108,6 +124,12 @@ func (cw *ConnWriter) Write(typ byte, connID uint32, payload []byte) error {
 	if len(payload) > MaxFrameSize {
 		cw.fail(fmt.Errorf("protocol: payload %d exceeds max %d", len(payload), MaxFrameSize))
 		return cw.err
+	}
+	if cw.timeout > 0 {
+		// Refreshed every frame: a stalled peer fails the write (fail() then
+		// closes the conn, so every later write returns immediately) instead of
+		// holding this mutex for good.
+		_ = cw.conn.SetWriteDeadline(time.Now().Add(cw.timeout))
 	}
 	err := writeHeader(cw.w, typ, connID, len(payload))
 	if err == nil && len(payload) > 0 {

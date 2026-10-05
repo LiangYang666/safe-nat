@@ -25,7 +25,7 @@ import (
 	"github.com/LiangYang666/safe-nat/internal/webapi"
 )
 
-const version = "0.9.0" // public_tls: server-side TLS termination on opted-in tunnel ports
+const version = "0.9.1" // v0.9.1: per-stream relay (one stalled peer can no longer wedge the session)
 
 const usageText = `safenat - secure NAT penetration (Go)
 

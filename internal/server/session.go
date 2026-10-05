@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/LiangYang666/safe-nat/internal/protocol"
+	"github.com/LiangYang666/safe-nat/internal/relay"
 	"github.com/LiangYang666/safe-nat/internal/tlsx"
 )
 
@@ -70,7 +71,18 @@ type pubConn struct {
 
 	up   atomic.Uint64 // visitor → server (bytes)
 	down atomic.Uint64 // server → visitor (bytes)
+
+	// out/quit/stopOnce give the stream its own writer (writeStream) so a
+	// visitor that stops reading can never block the session read loop, which is
+	// shared by every tunnel of this client (2026-10-05 outage).
+	out      chan []byte
+	quit     chan struct{}
+	stopOnce sync.Once
+	booked   atomic.Bool // traffic booked once per stream
 }
+
+// stop unblocks this stream's writer goroutine. Safe to call repeatedly.
+func (pc *pubConn) stop() { pc.stopOnce.Do(func() { close(pc.quit) }) }
 
 func newSession(s *Server, conn net.Conn) *session {
 	host, _, _ := net.SplitHostPort(conn.RemoteAddr().String())
@@ -326,11 +338,17 @@ func (s *session) acceptLoop(t *tunnel) {
 // it in the session map, bumps counters and publishes the UI event.
 func (s *session) openPubConn(t *tunnel, c net.Conn, ip netip.Addr) (uint32, *pubConn) {
 	id := s.connID.Add(1)
-	pc := &pubConn{c: c, tun: t, ip: ip}
+	pc := &pubConn{
+		c: c, tun: t, ip: ip,
+		out:  make(chan []byte, relay.QueueLen),
+		quit: make(chan struct{}),
+	}
 	s.mu.Lock()
 	s.conns[id] = pc
 	s.mu.Unlock()
 	t.opened.Add(1)
+	s.wg.Add(1)
+	go s.writeStream(pc, id)
 	ev := s.evBase(EvConnOpen)
 	ev.Tunnel, ev.TypeTunnel, ev.RemotePort, ev.IP, ev.ConnID = t.name, t.typ, t.remotePort, ip.String(), id
 	s.srv.hub.Publish(ev)
@@ -405,7 +423,46 @@ func (s *session) pumpCore(pc *pubConn, id uint32) {
 	}
 }
 
-// writePublic relays a client Data frame to the matching public conn.
+// writeStream is the only writer on one public conn. Draining it in its own
+// goroutine is what makes the session read loop immune to a stalled visitor:
+// that loop serves every tunnel of this client, so blocking it on one slow peer
+// used to freeze all of them (2026-10-05).
+func (s *session) writeStream(pc *pubConn, id uint32) {
+	defer s.wg.Done()
+	for {
+		select {
+		case chunk, ok := <-pc.out:
+			if !ok {
+				return
+			}
+			if chunk == nil {
+				// End-of-stream sentinel (see closeConn): everything enqueued
+				// before it is on the wire, so book the totals and let the visitor
+				// see a clean FIN after the whole transfer.
+				s.recordConn(pc)
+				_ = pc.c.Close()
+				return
+			}
+			if err := relay.WriteAll(pc.c, chunk); err != nil {
+				// Close unconditionally: if this stream was already taken out of
+				// the map, teardownConn turns into a no-op.
+				pc.stop()
+				_ = pc.c.Close()
+				s.recordConn(pc)
+				s.teardownConn(id, "wan write failed: "+err.Error())
+				return
+			}
+			pc.down.Add(uint64(len(chunk)))
+		case <-pc.quit:
+			return
+		}
+	}
+}
+
+// writePublic hands a client Data frame to the stream's writer goroutine.
+// Bounded by relay.StallTimeout: the frame is dropped and that one stream is
+// reaped if the visitor made no progress at all, rather than the whole session
+// waiting on it.
 func (s *session) writePublic(f protocol.Frame) {
 	s.mu.Lock()
 	pc := s.conns[f.ConnID]
@@ -414,16 +471,20 @@ func (s *session) writePublic(f protocol.Frame) {
 		s.log.Debug("data for unknown conn", "conn_id", f.ConnID)
 		return
 	}
-	n, err := pc.c.Write(f.Payload)
-	if err == nil {
-		pc.down.Add(uint64(n))
-	} else {
-		s.teardownConn(f.ConnID, "wan write failed: "+err.Error())
+	if !relay.Enqueue(pc.out, pc.quit, f.Payload) {
+		s.log.Warn("visitor stopped reading, dropping stream",
+			"conn_id", f.ConnID, "ip", pc.ip.String())
+		s.teardownConn(f.ConnID, "visitor stopped reading")
 	}
 }
 
 // recordConn books one finished connection's bytes to the tunnel counters.
+// Idempotent: both the graceful path (the stream's writer, once the queue is
+// flushed) and the abort paths may call it, and only the first booking counts.
 func (s *session) recordConn(pc *pubConn) {
+	if !pc.booked.CompareAndSwap(false, true) {
+		return
+	}
 	if up, down := pc.up.Load(), pc.down.Load(); up > 0 || down > 0 {
 		s.srv.RecordTraffic(pc.tun.name, int64(up), int64(down))
 	}
@@ -442,6 +503,7 @@ func (s *session) teardownConn(id uint32, reason string) {
 		return
 	}
 	s.recordConn(pc)
+	pc.stop()
 	_ = pc.c.Close()
 	_ = s.sw.WriteMsg(protocol.TypeClose, id, protocol.Close{Reason: reason})
 	ev := s.evBase(EvConnClose)
@@ -449,8 +511,11 @@ func (s *session) teardownConn(id uint32, reason string) {
 	s.srv.hub.Publish(ev)
 }
 
-// closeConn removes and closes the conn; reports whether it was present.
-// Used when the client initiated the close.
+// closeConn removes the conn and asks its writer to flush whatever is already
+// queued before closing the visitor socket — the client's close arrives strictly
+// after all of that stream's data frames, so a raw close here would cut off the
+// tail of a transfer (curl exit 18). Falls back to an immediate close when the
+// visitor itself is the stuck end.
 func (s *session) closeConn(id uint32) bool {
 	s.mu.Lock()
 	pc, ok := s.conns[id]
@@ -459,8 +524,11 @@ func (s *session) closeConn(id uint32) bool {
 	}
 	s.mu.Unlock()
 	if ok {
-		s.recordConn(pc)
-		_ = pc.c.Close()
+		if !relay.Enqueue(pc.out, pc.quit, nil) { // nil = end-of-stream sentinel
+			pc.stop()
+			_ = pc.c.Close()
+			s.recordConn(pc)
+		}
 	}
 	return ok
 }
@@ -495,6 +563,7 @@ func (s *session) shutdown() {
 		for id, pc := range s.conns {
 			delete(s.conns, id)
 			s.recordConn(pc)
+			pc.stop() // release its writer goroutine or run()'s wg.Wait() hangs
 			_ = pc.c.Close()
 		}
 		s.mu.Unlock()
