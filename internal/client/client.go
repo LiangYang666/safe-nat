@@ -21,6 +21,7 @@ import (
 
 	"github.com/LiangYang666/safe-nat/internal/config"
 	"github.com/LiangYang666/safe-nat/internal/protocol"
+	"github.com/LiangYang666/safe-nat/internal/relay"
 	"github.com/LiangYang666/safe-nat/internal/tlsx"
 )
 
@@ -41,6 +42,20 @@ type entry struct {
 	name string
 	cfg  config.TunnelConfig
 }
+
+// lanConn is one dialed LAN connection plus the queue drained by its own writer
+// goroutine. Relaying through that goroutine is what keeps a LAN service that
+// stops reading from blocking the session's single read loop — and with it every
+// other tunnel of this client (2026-10-05 outage).
+type lanConn struct {
+	c        net.Conn
+	out      chan []byte
+	quit     chan struct{}
+	stopOnce sync.Once
+}
+
+// stop unblocks this stream's writer goroutine. Safe to call repeatedly.
+func (l *lanConn) stop() { l.stopOnce.Do(func() { close(l.quit) }) }
 
 // Client holds static config and derived tunnel table.
 type Client struct {
@@ -269,20 +284,36 @@ func (c *Client) runOnce(ctx context.Context) error {
 	// 2) serve frames until the connection dies
 	var (
 		mu    sync.Mutex
-		conns = make(map[uint32]net.Conn) // LAN conns by connID
+		conns = make(map[uint32]*lanConn) // LAN conns by connID
 		wg    sync.WaitGroup
 		done  = make(chan struct{})
 	)
 
-	closeLAN := func(id uint32) bool {
+	// takeLAN removes a stream from the map. Graceful vs hard close is chosen by
+	// the caller: a graceful close flushes what is already queued toward the LAN
+	// service (so an upload's tail is not cut off), a hard one drops it.
+	takeLAN := func(id uint32) (*lanConn, bool) {
 		mu.Lock()
-		lan, ok := conns[id]
+		lc, ok := conns[id]
 		if ok {
 			delete(conns, id)
 		}
 		mu.Unlock()
+		return lc, ok
+	}
+	finishLAN := func(id uint32) bool {
+		lc, ok := takeLAN(id)
+		if ok && !relay.Enqueue(lc.out, lc.quit, nil) { // nil = end-of-stream sentinel
+			lc.stop()
+			_ = lc.c.Close()
+		}
+		return ok
+	}
+	killLAN := func(id uint32) bool {
+		lc, ok := takeLAN(id)
 		if ok {
-			_ = lan.Close()
+			lc.stop()
+			_ = lc.c.Close()
 		}
 		return ok
 	}
@@ -322,9 +353,39 @@ func (c *Client) runOnce(ctx context.Context) error {
 				if !errors.Is(err, io.EOF) {
 					reason = err.Error()
 				}
-				if closeLAN(id) {
+				if finishLAN(id) {
 					_ = sw.WriteMsg(protocol.TypeClose, id, protocol.Close{Reason: reason})
 				}
+				return
+			}
+		}
+	}
+
+	// LAN writer: the only writer on one LAN conn, so a service that stops
+	// reading stalls its own stream instead of the read loop below.
+	writeLAN := func(lc *lanConn, id uint32) {
+		defer wg.Done()
+		for {
+			select {
+			case chunk, ok := <-lc.out:
+				if !ok {
+					return
+				}
+				if chunk == nil {
+					// End-of-stream sentinel (see finishLAN): the queued tail is
+					// on the wire, so the LAN service can be closed cleanly.
+					_ = lc.c.Close()
+					return
+				}
+				if err := relay.WriteAll(lc.c, chunk); err != nil {
+					// Always close: the stream may already have been taken out of
+					// the map, in which case killLAN is a no-op.
+					killLAN(id)
+					lc.stop()
+					_ = lc.c.Close()
+					return
+				}
+			case <-lc.quit:
 				return
 			}
 		}
@@ -367,28 +428,35 @@ func (c *Client) runOnce(ctx context.Context) error {
 				_ = sw.WriteMsg(protocol.TypeClose, f.ConnID, protocol.Close{Reason: "local dial failed: " + err.Error()})
 				continue
 			}
+			lc := &lanConn{
+				c:    lan,
+				out:  make(chan []byte, relay.QueueLen),
+				quit: make(chan struct{}),
+			}
 			mu.Lock()
-			conns[f.ConnID] = lan
+			conns[f.ConnID] = lc
 			mu.Unlock()
 			c.log.Info("local conn opened", "name", name, "local", localAddr, "conn_id", f.ConnID)
-			wg.Add(1)
+			wg.Add(2)
+			go writeLAN(lc, f.ConnID)
 			go pump(lan, f.ConnID)
 		case protocol.TypeData:
 			mu.Lock()
-			lan := conns[f.ConnID]
+			lc := conns[f.ConnID]
 			mu.Unlock()
-			if lan == nil {
+			if lc == nil {
 				c.log.Debug("data for unknown conn", "conn_id", f.ConnID)
 				continue
 			}
-			if _, err := lan.Write(f.Payload); err != nil {
-				closeLAN(f.ConnID)
+			if !relay.Enqueue(lc.out, lc.quit, f.Payload) {
+				c.log.Warn("lan service stopped reading, dropping stream", "conn_id", f.ConnID)
+				killLAN(f.ConnID)
 			}
 		case protocol.TypeClose:
 			var msg protocol.Close
 			_ = json.Unmarshal(f.Payload, &msg)
 			c.log.Debug("server closed conn", "conn_id", f.ConnID, "reason", msg.Reason)
-			closeLAN(f.ConnID)
+			killLAN(f.ConnID)
 		case protocol.TypeHeartbeat, protocol.TypeLoginResp:
 			// liveness only
 		default:
@@ -399,8 +467,9 @@ func (c *Client) runOnce(ctx context.Context) error {
 	// Teardown: stop heartbeat, kill control + LAN conns so pumps exit.
 	close(done)
 	mu.Lock()
-	for _, lan := range conns {
-		_ = lan.Close()
+	for _, lc := range conns {
+		lc.stop()
+		_ = lc.c.Close()
 	}
 	mu.Unlock()
 	_ = conn.Close()
