@@ -25,7 +25,7 @@ import (
 	"github.com/LiangYang666/safe-nat/internal/webapi"
 )
 
-const version = "0.10.0" // v0.10.0: refusal log — who is being blocked, with history
+const version = "0.10.1" // v0.10.1: panel nav/layout fixes; panel footer reports the real server version
 
 const usageText = `safenat - secure NAT penetration (Go)
 
@@ -188,7 +188,7 @@ func runServer(args []string) int {
 	errCh := make(chan error, 2)
 	go func() { errCh <- srv.Run(cctx) }()
 	if cfg.Web != nil {
-		go func() { errCh <- webapi.Run(cctx, srv, cfg.Web, log) }()
+		go func() { errCh <- webapi.Run(cctx, srv, cfg.Web, log, version) }()
 	}
 	if err := <-errCh; err != nil {
 		cancel()

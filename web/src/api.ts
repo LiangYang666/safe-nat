@@ -149,12 +149,12 @@ export class ApiError extends Error {
 
 export const api = {
   login: (username: string, password: string) =>
-    request<{ ok: boolean; username: string }>('/api/login', {
+    request<{ ok: boolean; username: string; version?: string }>('/api/login', {
       method: 'POST',
       body: JSON.stringify({ username, password }),
     }),
   logout: () => request<{ ok: boolean }>('/api/logout', { method: 'POST' }),
-  session: () => request<{ ok: boolean; username: string }>('/api/session'),
+  session: () => request<{ ok: boolean; username: string; version?: string }>('/api/session'),
   stats: () => request<Stats>('/api/stats'),
   tunnels: () => request<TunnelView[]>('/api/tunnels'),
   sessions: () => request<SessionView[]>('/api/sessions'),

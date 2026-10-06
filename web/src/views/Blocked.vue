@@ -152,7 +152,7 @@ onMounted(refreshBlocked)
             <th class="w-16 px-3 py-2 text-right font-normal">次数</th>
             <th class="px-3 py-2 font-normal">最近</th>
             <th class="px-3 py-2 font-normal">状态</th>
-            <th class="w-28 px-5 py-2 text-right font-normal">操作</th>
+            <th class="w-36 px-5 py-2 text-right font-normal">操作</th>
           </tr>
         </thead>
         <tbody class="divide-y divide-[#151d29]">
@@ -173,16 +173,16 @@ onMounted(refreshBlocked)
               <span v-else class="text-slate-500">未放行</span>
             </td>
             <td class="px-5 py-3 text-right">
-              <div class="flex justify-end gap-1">
+              <div class="flex flex-nowrap justify-end gap-1">
                 <button
                   v-if="!r.covered"
                   :disabled="busyIP === r.ip"
-                  class="rounded-md border border-emerald-500/30 px-2 py-1 text-xs text-emerald-300 transition-colors hover:bg-emerald-500/10 disabled:opacity-40"
+                  class="whitespace-nowrap rounded-md border border-emerald-500/30 px-2 py-1 text-xs text-emerald-300 transition-colors hover:bg-emerald-500/10 disabled:opacity-40"
                   title="把这个 IP 加入白名单（放行）"
                   @click="allow(r.ip)"
                 >放行</button>
                 <button
-                  class="rounded-md border border-transparent px-2 py-1 text-xs text-slate-500 transition-colors hover:border-[#243044] hover:text-slate-300"
+                  class="whitespace-nowrap rounded-md border border-transparent px-2 py-1 text-xs text-slate-500 transition-colors hover:border-[#243044] hover:text-slate-300"
                   title="复制 IP"
                   @click="copy(r.ip)"
                 >复制</button>

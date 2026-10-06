@@ -26,6 +26,7 @@ var staticFS embed.FS
 type WebAPI struct {
 	srv          *server.Server // management state + event hub
 	wc           *config.WebConfig
+	version      string // build version of the running binary (panel footer)
 	log          *slog.Logger
 	sess         *sessionStore
 	loginLimiter *throttle.Limiter // per-IP escalating lock on failed logins
@@ -33,10 +34,13 @@ type WebAPI struct {
 
 // Run serves the management UI/API on wc.BindPort until ctx is cancelled.
 // A bind failure is returned synchronously so the caller can fail fast.
-func Run(ctx context.Context, srv *server.Server, wc *config.WebConfig, log *slog.Logger) error {
+// version is the running binary's version, reported to the panel so the footer
+// cannot drift from the server it is talking to.
+func Run(ctx context.Context, srv *server.Server, wc *config.WebConfig, log *slog.Logger, version string) error {
 	a := &WebAPI{
 		srv:          srv,
 		wc:           wc,
+		version:      version,
 		log:          log,
 		sess:         newSessionStore(sessionTTL),
 		loginLimiter: throttle.New(),
