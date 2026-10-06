@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/LiangYang666/safe-nat/internal/blocklog"
 	"github.com/LiangYang666/safe-nat/internal/protocol"
 	"github.com/LiangYang666/safe-nat/internal/relay"
 	"github.com/LiangYang666/safe-nat/internal/tlsx"
@@ -287,6 +288,7 @@ func (s *session) acceptLoop(t *tunnel) {
 			ev := s.evBase(EvBlocked)
 			ev.Tunnel, ev.TypeTunnel, ev.RemotePort, ev.IP = t.name, t.typ, t.remotePort, ip.String()
 			s.srv.hub.Publish(ev)
+			s.srv.recordRefusal(ip.String(), t.name, t.remotePort, blocklog.KindBlocked, "")
 			s.log.Info("firewall blocked", "ip", ip.String(), "port", t.remotePort)
 			_ = c.Close()
 			continue
@@ -316,6 +318,7 @@ func (s *session) acceptLoop(t *tunnel) {
 				ev.Tunnel, ev.TypeTunnel, ev.RemotePort, ev.IP = t.name, t.typ, t.remotePort, ip.String()
 				ev.Reason = hsErr.Error()
 				s.srv.hub.Publish(ev)
+				s.srv.recordRefusal(ip.String(), t.name, t.remotePort, blocklog.KindTLSFail, hsErr.Error())
 				s.log.Info("tls handshake failed", "ip", ip.String(), "port", t.remotePort, "err", hsErr)
 				continue
 			}

@@ -79,6 +79,8 @@ func (a *WebAPI) routes() http.Handler {
 	mux.Handle("GET /api/traffic/daily", a.requireSession(http.HandlerFunc(a.handleTrafficDaily)))
 	mux.Handle("GET /api/traffic/series", a.requireSession(http.HandlerFunc(a.handleTrafficSeries)))
 	mux.Handle("GET /api/events", a.requireSession(http.HandlerFunc(a.handleEvents)))
+	mux.Handle("GET /api/blocked", a.requireSession(http.HandlerFunc(a.handleBlocked)))
+	mux.Handle("DELETE /api/blocked", a.requireSession(http.HandlerFunc(a.handleBlockedClear)))
 
 	// SPA + assets. Unknown non-API GET paths fall back to index.html so a
 	// page refresh keeps working.

@@ -7,7 +7,7 @@ const cards = computed(() => [
   { label: '隧道', value: String(store.stats.tunnels), hint: `socks5 也在其中`, cls: 'text-emerald-300' },
   { label: '当前连接', value: String(store.stats.conn_active), hint: `累计 ${store.stats.conn_total}`, cls: 'text-slate-200' },
   { label: '白名单规则', value: String(store.stats.whitelist_rules), hint: '精确 IP + CIDR', cls: 'text-amber-300' },
-  { label: '累计拦截', value: String(store.stats.blocked_total), hint: '防火墙拒绝的连接', cls: 'text-rose-400' },
+  { label: '累计拦截', value: String(store.stats.blocked_total), hint: `独立来源 IP ${store.blocked.summary.unique_ips}`, cls: 'text-rose-400' },
   { label: '运行时长', value: fmtUp(store.stats.uptime_sec), hint: 'server 自启动起', cls: 'text-slate-300' },
 ])
 

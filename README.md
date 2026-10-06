@@ -28,13 +28,14 @@ safenat version    # 确认装好
 
 - ✅ **TCP 端口映射**：多隧道并发，一条控制连接多路复用所有转发数据
 - ✅ **IP 白名单防火墙**：精确 IP + CIDR（`1.2.3.4` / `10.0.0.0/8`，IPv4/IPv6），每隧道独立开关
-- ✅ **Web 管理面板**（Vue3 暗色运维风，登录 / 总览 / 隧道 / 流量 / 白名单 / 安全日志 + SSE 实时事件）
+- ✅ **Web 管理面板**（Vue3 暗色运维风，登录 / 总览 / 隧道 / 流量 / 白名单 / **拦截记录** / 安全日志 + SSE 实时事件）
 - ✅ **SOCKS5 代理**：把客户端所在的局域网变成可浏览的网络（出网代理场景）
 - ✅ **流量统计（v0.8）**：每隧道独立实时吞吐（1s 采样）+ 分钟级曲线（SQLite，自动保留 7 天）+ 天级历史持久化，面板「流量」页曲线/柱状图悬停查看逐点数据
 - ✅ **IP 归属地标注（v0.8）**：白名单规则自动标注 ip2region 地域（离线库 embed）；面板自动识别当前访问者 IP，一键把自己加进白名单
 - ✅ 心跳保活 + 断线指数退避重连（±20% 抖动防重连风暴）
 - ✅ **自动传输加密（v0.7）**：server↔client 默认 TLS（自签 + 指纹校验，SSH known_hosts 式），零配置
 - ✅ **公网 TLS 终结（v0.9）**：`public_tls.ports` 列出的隧道端口由服务端终结访客 TLS——浏览器用 `https://` 访问公网端口，内层服务保持 HTTP 不用改一行代码；按端口 opt-in，VNC/SOCKS5 这类不认 TLS 的客户端不受影响
+- ✅ **拦截记录（v0.10）**：白名单拒绝与 TLS 握手失败**落库留档**（SQLite，重启不丢），面板「拦截记录」页按 IP·隧道·端口聚合（次数 / 首次 / 最近 / 地域 / 是否已放行），一键把某个 IP 加进白名单、一键清空；原始明细保留 7 天
 - ✅ 单二进制部署（前端 embed + 纯 Go sqlite，免 cgo，可交叉编译上路由器 / NAS）
 - ✅ **防爆破**：Web 登录与控制口接入按 IP 递增锁定（5 错 → 1m/5m/15m），失败尝试实时上安全日志
 - ✅ 本地运维：`safenat init`（配置生成到用户目录）· `safenat status`（已监听端口/会话/统计）· `safenat logs`
@@ -78,6 +79,20 @@ safenat version    # 确认装好
 - **关闭语义分两种**：`finish`（冲刷完再关，用于对端正常结束）与 `kill`（立刻丢弃并关，用于卡死/超时/会话结束）。
 
 两条超时都可用 `internal/relay` 包变量在测试里改小，端到端回归测试见 `internal/server/wedge_test.go`（三条：堵住的访客、堵住的后端、以及"后端一次性写完就关"必须完整送达）。
+
+## 拦截记录：谁在敲我的端口（v0.10）
+
+安全日志页只有**实时**事件流：刷新就没了，也没法回答"过去两天是谁在扫我 35900"。v0.10 把拒绝落库：
+
+- **记什么**：白名单拒绝（`blocked`）与 `public_tls` 端口上的 TLS 握手失败（`tls_fail`）——两者都是"来着不欢迎"，只是拒绝理由不同。
+- **存在哪**：`web.db_path` 同一个 SQLite 文件（`refusals` 聚合表 + `refusals_recent` 原始表）。重启服务、刷新页面都不丢。
+- **怎么聚合**：按 `(ip, 隧道, remote_port, 原因)` 归并，累加次数、记录首次/最近时间与最后一次拒绝原因；读取时顺带解析地域（ip2region）并标注该 IP 当前**是否已被白名单放行**。
+- **保留策略**：原始明细 7 天，聚合条目保留最近 5000 条（超出按最近时间淘汰）。
+- **数据面优先**：拒绝记录走有界队列由单独的写入 goroutine 批量落库（约 1s 一拍）。队列满时**丢记录而不是卡隧道**，丢弃数在面板上如实显示（扫描洪峰下会看到）。
+
+面板「拦截记录」页：汇总卡（累计 / 独立 IP / 窗口内明细 / 聚合条目）+ 聚合表（按次数或最近排序、可按隧道筛、默认只看"未放行"）+ 「放行」按钮（直接调白名单接口，放行后该行立刻翻绿）+ 「展开明细」看原始记录 + 「清空记录」。
+
+注意：**拦截 ≠ 攻击成功**。被拒的连接从未到达你的内网服务；反过来，白名单里的旧公网 IP 才是风险——那是给陌生人的放行条。定期扫一眼这页，顺手删掉过期的白名单规则。
 
 ## 快速开始
 
@@ -166,7 +181,8 @@ tunnels:
 
 ```bash
 curl http://<server>:40022   # 白名单内 → 正常响应
-# 白名单外的来源 → 连接被拒（reset），并在面板安全日志出现 blocked 事件
+# 白名单外的来源 → 连接被拒（reset），面板安全日志出现 blocked 事件，
+# 并且能在「拦截记录」页长期查到（哪个 IP、哪个端口、多少次）
 curl --socks5-hostname <server>:7999 http://intranet.example/   # SOCKS5 代理
 ```
 
@@ -231,7 +247,9 @@ safenat logs client 50   # client 最近 50 行
 | GET | `/api/traffic/live` | 各隧道实时速率与累计（1s 采样） |
 | GET | `/api/traffic/daily?days=&tunnel=` | 天级历史（SQLite，可过滤隧道，days 1–90） |
 | GET | `/api/traffic/series?days=&bucket=&tunnel=` | 分钟级曲线（days 1–7，bucket `m`/`h`，分钟数据自动保留 7 天） |
-| GET | `/api/events` | SSE 实时事件（conn_open / conn_close / blocked / client_up / client_down / auth_fail / login_fail） |
+| GET | `/api/events` | SSE 实时事件（conn_open / conn_close / blocked / tls_fail / client_up / client_down / auth_fail / login_fail） |
+| GET | `/api/blocked?limit=&recent=` | **拦截记录聚合**（v0.10）：每行 = 一个 IP·隧道·端口，含次数/首次/最近/地域/是否已在白名单；附带最近原始明细 |
+| DELETE | `/api/blocked` | 清空拦截记录（白名单不受影响） |
 | GET | `/` | SPA（embed） |
 
 ## 安全模型（诚实版）

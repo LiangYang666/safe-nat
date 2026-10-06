@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/LiangYang666/safe-nat/internal/blocklog"
 	"github.com/LiangYang666/safe-nat/internal/geodb"
 	"github.com/LiangYang666/safe-nat/internal/traffic"
 	"github.com/LiangYang666/safe-nat/internal/whitelist"
@@ -162,6 +163,85 @@ func (a *WebAPI) handleTrafficSeries(w http.ResponseWriter, r *http.Request) {
 		rows = []traffic.SeriesRow{}
 	}
 	writeJSON(w, http.StatusOK, rows)
+}
+
+// ---------- refusal log (who is being blocked) ----------
+
+// handleBlocked returns the aggregated refusal log: one row per
+// (ip, tunnel, port, kind) plus the newest raw hits. Rows are enriched with
+// the IP's region and whether a whitelist rule already covers it — that is
+// what lets the UI show "已在白名单" instead of offering a pointless
+// "add me" button.
+func (a *WebAPI) handleBlocked(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	limit := 200
+	if v := q.Get("limit"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 1000 {
+			writeErr(w, http.StatusBadRequest, "limit must be 1..1000")
+			return
+		}
+		limit = n
+	}
+	recentLimit := 50
+	if v := q.Get("recent"); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil || n < 1 || n > 500 {
+			writeErr(w, http.StatusBadRequest, "recent must be 1..500")
+			return
+		}
+		recentLimit = n
+	}
+
+	type row struct {
+		blocklog.Entry
+		Region  string `json:"region"`  // ip2region label, "" when unknown
+		Covered bool   `json:"covered"` // a whitelist rule covers this IP
+		Rule    string `json:"rule,omitempty"`
+	}
+	out := make([]row, 0, limit)
+	sum := blocklog.Summary{}
+	recent := []blocklog.RecentHit{}
+
+	if bl := a.srv.BlockedLog(); bl != nil {
+		rows, err := bl.Rows(limit)
+		if err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		for _, e := range rows {
+			rule, covered := a.srv.WhiteMatch(e.IP)
+			out = append(out, row{Entry: e, Region: geodb.Region(e.IP), Covered: covered, Rule: rule})
+		}
+		if sum, err = bl.Summary(); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		if recent, err = bl.Recent(recentLimit); err != nil {
+			writeErr(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"summary": sum,
+		"rows":    out,
+		"recent":  recent,
+	})
+}
+
+// handleBlockedClear wipes the refusal log (UI "清空记录").
+func (a *WebAPI) handleBlockedClear(w http.ResponseWriter, r *http.Request) {
+	bl := a.srv.BlockedLog()
+	if bl == nil {
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+		return
+	}
+	if err := bl.Clear(); err != nil {
+		writeErr(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	a.log.Info("refusal log cleared", "by", clientIP(r))
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // ---------- SSE event stream ----------
