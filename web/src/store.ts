@@ -1,7 +1,7 @@
 // Shared reactive state: dashboard snapshots (polled) + live event log (SSE).
 import { reactive } from 'vue'
 import { api, ApiError, fmtFullTime, fmtUptime } from './api'
-import type { ServerEvent, SessionView, Stats, TunnelView, WhitelistRule } from './api'
+import type { BlockedLog, ServerEvent, SessionView, Stats, TunnelView, WhitelistRule } from './api'
 
 export interface EventRow {
   kind: string
@@ -11,6 +11,12 @@ export interface EventRow {
 }
 
 const MAX_EVENTS = 300
+
+const emptyBlocked = (): BlockedLog => ({
+  summary: { total: 0, recent: 0, unique_ips: 0, rows: 0, dropped: 0 },
+  rows: [],
+  recent: [],
+})
 
 const emptyStats = (): Stats => ({
   uptime_sec: 0,
@@ -42,6 +48,7 @@ export const store = reactive({
   sessions: [] as SessionView[],
   rules: [] as WhitelistRule[],
   events: [] as EventRow[],
+  blocked: emptyBlocked(), // refusal log (aggregated + recent raw hits)
   err: '', // transient banner text
 })
 
@@ -51,6 +58,16 @@ let sseRetry = 0
 
 export function fmtUp(sec: number): string {
   return fmtUptime(sec)
+}
+
+let lastBlockedFetch = 0
+// A refusal event means the refused set changed; refetch it (throttled, so a
+// scan burst cannot turn into a request storm — the 3s poll covers the rest).
+function onRefusalEvent() {
+  const now = Date.now()
+  if (now - lastBlockedFetch < 2000) return
+  lastBlockedFetch = now
+  void refreshBlocked()
 }
 
 function pushEvent(ev: ServerEvent) {
@@ -83,6 +100,7 @@ function pushEvent(ev: ServerEvent) {
   }
   store.events.unshift({ kind: ev.type, time: fmtFullTime(ev.time), text, cls })
   if (store.events.length > MAX_EVENTS) store.events.length = MAX_EVENTS
+  if (ev.type === 'blocked' || ev.type === 'tls_fail') onRefusalEvent()
 }
 
 function connectSSE() {
@@ -99,7 +117,7 @@ function connectSSE() {
       /* ignore malformed frame */
     }
   }
-  for (const name of ['client_up', 'client_down', 'conn_open', 'conn_close', 'blocked', 'auth_fail', 'login_fail']) {
+  for (const name of ['client_up', 'client_down', 'conn_open', 'conn_close', 'blocked', 'tls_fail', 'auth_fail', 'login_fail']) {
     sse.addEventListener(name, onMessage)
   }
   sse.onerror = () => {
@@ -111,16 +129,18 @@ function connectSSE() {
 
 async function refresh() {
   try {
-    const [stats, tunnels, sessions, rules] = await Promise.all([
+    const [stats, tunnels, sessions, rules, blocked] = await Promise.all([
       api.stats(),
       api.tunnels(),
       api.sessions(),
       api.whitelist(),
+      api.blocked(),
     ])
     store.stats = stats
     store.tunnels = tunnels
     store.sessions = sessions
     store.rules = rules
+    store.blocked = blocked
     store.err = ''
   } catch (e) {
     if (e instanceof ApiError && e.status === 401) {
@@ -182,6 +202,22 @@ export async function logout() {
 
 export function clearEvents() {
   store.events = []
+}
+
+// refreshBlocked refetches just the refusal log (used by the 拦截记录 view
+// after adding a whitelist rule, and by live refusal events).
+export async function refreshBlocked() {
+  try {
+    store.blocked = await api.blocked()
+  } catch {
+    /* polling will retry */
+  }
+}
+
+// clearRefusals wipes the server-side refusal log (the whitelist is untouched).
+export async function clearRefusals() {
+  await api.blockedClear()
+  await refreshBlocked()
 }
 
 export { api }

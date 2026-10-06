@@ -6,10 +6,11 @@ import Overview from './views/Overview.vue'
 import Tunnels from './views/Tunnels.vue'
 import Whitelist from './views/Whitelist.vue'
 import EventsLog from './views/EventsLog.vue'
+import Blocked from './views/Blocked.vue'
 import Traffic from './views/Traffic.vue'
 import Login from './views/Login.vue'
 
-type ViewName = 'overview' | 'tunnels' | 'whitelist' | 'traffic' | 'events'
+type ViewName = 'overview' | 'tunnels' | 'whitelist' | 'traffic' | 'blocked' | 'events'
 
 const view = ref<ViewName>('overview')
 const views: { id: ViewName; label: string; icon: string }[] = [
@@ -17,6 +18,7 @@ const views: { id: ViewName; label: string; icon: string }[] = [
   { id: 'tunnels', label: '隧道', icon: 'M12 3l9 5-9 5-9-5 9-5zm-7 8.5L12 16l7-4.5V15l-7 4.5-7-4.5v-3.5z' },
   { id: 'traffic', label: '流量', icon: 'M3 12h4l3-8 4 16 3-8h4' },
   { id: 'whitelist', label: 'IP 白名单', icon: 'M12 2l8 4v6c0 5-3.5 9-8 10-4.5-1-8-5-8-10V6l8-4zm0 2.3L6 7.5V12c0 3.6 2.4 6.6 6 7.6 3.6-1 6-4 6-7.6V7.5l-6-3.2zM11 7h2v2h-2V7zm0 3.5h2V15h-2v-4.5z' },
+  { id: 'blocked', label: '拦截记录', icon: 'M12 2a10 10 0 100 20 10 10 0 000-20zm0 2c1.85 0 3.55.63 4.9 1.69L5.69 16.9A7.96 7.96 0 0112 4zm0 16c-1.85 0-3.55-.63-4.9-1.69L18.31 7.1A7.96 7.96 0 0112 20z' },
   { id: 'events', label: '安全日志', icon: 'M12 2a10 10 0 100 20 10 10 0 000-20zm0 2a8 8 0 110 16 8 8 0 010-16zm-1 4h2v6h-2V8zm0 8h2v2h-2v-2z' },
 ]
 
@@ -115,6 +117,7 @@ onMounted(boot)
         <Tunnels v-show="view === 'tunnels'" />
         <Traffic v-show="view === 'traffic'" />
         <Whitelist v-show="view === 'whitelist'" />
+        <Blocked v-show="view === 'blocked'" />
         <EventsLog v-show="view === 'events'" />
       </main>
     </div>

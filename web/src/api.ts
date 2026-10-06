@@ -45,6 +45,44 @@ export interface MyIpInfo {
   rule?: string // the stored rule covering ip, when covered
 }
 
+// One aggregated refusal: a single (ip, tunnel, port, kind) with counters.
+export interface BlockedRow {
+  ip: string
+  tunnel: string
+  remote_port: number
+  kind: string // blocked | tls_fail
+  count: number
+  first_seen: string
+  last_seen: string
+  last_reason?: string
+  region?: string
+  covered: boolean // a whitelist rule already covers this IP
+  rule?: string
+}
+
+export interface BlockedHit {
+  time: string
+  ip: string
+  tunnel: string
+  remote_port: number
+  kind: string
+  reason?: string
+}
+
+export interface BlockedSummary {
+  total: number // lifetime refusals
+  recent: number // raw hits inside the retention window
+  unique_ips: number
+  rows: number
+  dropped: number // hits lost to a full queue (data plane first)
+}
+
+export interface BlockedLog {
+  summary: BlockedSummary
+  rows: BlockedRow[]
+  recent: BlockedHit[]
+}
+
 export interface TrafficLive {
   tunnel: string
   up_bps: number
@@ -138,6 +176,9 @@ export const api = {
     }),
   whitelistDelete: (id: number) =>
     request<{ ok: boolean }>(`/api/whitelist/${id}`, { method: 'DELETE' }),
+  blocked: (limit = 200, recent = 50) =>
+    request<BlockedLog>(`/api/blocked?limit=${limit}&recent=${recent}`),
+  blockedClear: () => request<{ ok: boolean }>('/api/blocked', { method: 'DELETE' }),
 }
 
 export function fmtUptime(sec: number): string {

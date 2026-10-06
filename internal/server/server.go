@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/LiangYang666/safe-nat/internal/blocklog"
 	"github.com/LiangYang666/safe-nat/internal/config"
 	"github.com/LiangYang666/safe-nat/internal/throttle"
 	"github.com/LiangYang666/safe-nat/internal/tlsx"
@@ -40,6 +41,11 @@ type Server struct {
 
 	trafDB   *traffic.DB      // nil unless web management is on
 	trafLive *traffic.Tracker // in-memory totals + 1s rates
+
+	// blockLog records refusals (whitelist denials, TLS handshake failures)
+	// with history so the UI can show who keeps knocking. nil without web
+	// management.
+	blockLog *blocklog.Log
 
 	// ctlLimiter rate-limits client login attempts per source IP, so the
 	// public control port survives token brute force.
@@ -126,6 +132,15 @@ func New(cfg *config.ServerConfig, log *slog.Logger) (*Server, error) {
 		s.trafDB = trafDB
 		s.trafLive = traffic.NewTracker()
 		log.Info("traffic store opened", "db", cfg.Web.DBPath)
+
+		bl, err := blocklog.Open(cfg.Web.DBPath)
+		if err != nil {
+			_ = store.Close()
+			_ = trafDB.Close()
+			return nil, err
+		}
+		s.blockLog = bl
+		log.Info("refusal log opened", "db", cfg.Web.DBPath)
 	}
 	return s, nil
 }
@@ -138,10 +153,27 @@ func (s *Server) Close() {
 	if s.trafDB != nil {
 		_ = s.trafDB.Close()
 	}
+	// Waits for the writer (and its final flush) before closing the file.
+	if s.blockLog != nil {
+		_ = s.blockLog.Close()
+	}
 }
 
 // Config exposes the server config to consumers (e.g. webapi).
 func (s *Server) Config() *config.ServerConfig { return s.cfg }
+
+// BlockedLog returns the refusal store, or nil when web management is off.
+func (s *Server) BlockedLog() *blocklog.Log { return s.blockLog }
+
+// recordRefusal files one refused connection. Never blocks the accept loop:
+// the store queues the hit (`blocklog` drops it if its queue is full, which is
+// preferable to stalling a tunnel).
+func (s *Server) recordRefusal(ip, tunnel string, port uint16, kind, reason string) {
+	if s.blockLog == nil {
+		return
+	}
+	s.blockLog.Record(blocklog.Hit{IP: ip, Tunnel: tunnel, RemotePort: port, Kind: kind, Reason: reason})
+}
 
 // Whitelist returns the whitelist store, or nil when web management is off.
 func (s *Server) Whitelist() *whitelist.Store { return s.store }
@@ -254,6 +286,11 @@ func (s *Server) Run(ctx context.Context) error {
 		ln = tls.NewListener(ln, s.tlsCfg)
 	}
 	s.log.Info("server listening", "addr", ln.Addr().String(), "web", s.cfg.Web != nil, "tls", s.tlsCfg != nil)
+
+	// Refusal-log writer: batches hits off the data plane (~1 Hz flush).
+	if s.blockLog != nil {
+		go s.blockLog.Run(ctx)
+	}
 
 	// 1 Hz live-rate sampler for the traffic view.
 	if s.trafLive != nil {

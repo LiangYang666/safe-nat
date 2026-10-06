@@ -25,7 +25,7 @@ import (
 	"github.com/LiangYang666/safe-nat/internal/webapi"
 )
 
-const version = "0.9.1" // v0.9.1: per-stream relay (one stalled peer can no longer wedge the session)
+const version = "0.10.0" // v0.10.0: refusal log — who is being blocked, with history
 
 const usageText = `safenat - secure NAT penetration (Go)
 
