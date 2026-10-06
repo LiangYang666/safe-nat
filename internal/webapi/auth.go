@@ -164,7 +164,7 @@ func (a *WebAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   int(sessionTTL.Seconds()),
 	})
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": a.wc.Username})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": a.wc.Username, "version": a.version})
 }
 
 // publishLoginFail surfaces a failed web login to the live security log
@@ -186,5 +186,5 @@ func (a *WebAPI) handleSession(w http.ResponseWriter, r *http.Request) {
 	// reachable only with a valid session; report who we are
 	c, _ := r.Cookie(cookieName)
 	user, _ := a.sess.get(c.Value)
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": user})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "username": user, "version": a.version})
 }

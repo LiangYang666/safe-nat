@@ -42,6 +42,7 @@ export const store = reactive({
   ready: false, // boot finished (session probe answered)
   authed: false,
   username: '',
+  version: '', // server build version, shown in the sidebar footer
   live: false, // SSE connected
   stats: emptyStats(),
   tunnels: [] as TunnelView[],
@@ -174,6 +175,7 @@ export async function boot() {
     const s = await api.session()
     store.authed = true
     store.username = s.username
+    store.version = s.version ?? ''
     connectSSE()
     await refresh()
     startPolling()
@@ -187,6 +189,7 @@ export async function login(username: string, password: string) {
   const res = await api.login(username, password)
   store.authed = true
   store.username = res.username
+  store.version = res.version ?? ''
   connectSSE()
   await refresh()
   startPolling()
